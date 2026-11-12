@@ -11,6 +11,11 @@ from planar_arm_control.motion import (
     solve_xy_target,
     trajectory_respects_constraints,
 )
+from planar_arm_control.pick_place_node import (
+    build_pick_place_waypoints,
+    build_pick_waypoints,
+    tool_planar_position,
+)
 from planar_arm_control.planar_arm import PlanarArm
 
 
@@ -67,9 +72,9 @@ class TestMotion(unittest.TestCase):
             solve_xy_target(self.arm, (10.0, 0.0), [0.0, 0.0, 0.0])
 
     def test_feedback_roundoff_near_limit_is_clamped_but_real_error_remains(
-        self,
+        self
     ):
-        """Correct negligible feedback noise without hiding limit violations."""
+        """Clamp negligible noise without hiding real joint limit violations."""
         near_limit = clamp_joint_limit_roundoff(
             self.arm, [-1e-14, 0.0, 0.0]
         )
@@ -81,6 +86,35 @@ class TestMotion(unittest.TestCase):
         )
         self.assertEqual(outside_limit[0], -1e-6)
         self.assertFalse(self.arm.within_joint_limits(outside_limit))
+
+    def test_pick_place_waypoints_are_reachable_and_path_safe(self):
+        """Validate all requested pick/place stages from the home pose."""
+        current = [0.0, 0.0, 0.0]
+        for _, point in build_pick_place_waypoints():
+            goal = solve_xy_target(self.arm, point, current)
+            trajectory = make_trajectory(current, goal, 2.0, 1.0)
+            self.assertTrue(
+                trajectory_respects_constraints(
+                    self.arm, trajectory, 0.005
+                )
+            )
+            current = goal
+
+    def test_pick_operation_includes_lifting_the_item(self):
+        """Pick ends at the raised item pose before a separate place call."""
+        pick_waypoints = build_pick_waypoints()
+        self.assertEqual(len(pick_waypoints), 3)
+        self.assertEqual(pick_waypoints[-1][0], "Lifting item")
+        self.assertEqual(pick_waypoints[-1][1], (4.0, 2.3))
+
+    def test_release_pose_uses_current_measured_arm_position(self):
+        """Release follows a changed arm pose rather than fixed place coords."""
+        joint_positions = [1.0, -0.5, 0.2]
+        expected = self.arm.end_effector(joint_positions)
+        self.assertEqual(
+            tool_planar_position(self.arm, joint_positions),
+            (float(expected[0]), float(expected[1])),
+        )
 
 
 if __name__ == "__main__":

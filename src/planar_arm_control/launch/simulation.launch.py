@@ -110,6 +110,17 @@ def generate_launch_description():
             output="screen",
         ),
         Node(
+            package="ros_gz_bridge",
+            executable="parameter_bridge",
+            name="entity_pose_bridge",
+            arguments=[
+                "/world/planar_arm_world/set_pose"
+                "@ros_gz_interfaces/srv/SetEntityPose"
+                "@gz.msgs.Pose@gz.msgs.Boolean"
+            ],
+            output="screen",
+        ),
+        Node(
             package="robot_state_publisher",
             executable="robot_state_publisher",
             name="robot_state_publisher",
@@ -128,6 +139,13 @@ def generate_launch_description():
                 {"backend_mode": "ros2_control"},
                 {"use_sim_time": use_sim_time},
             ],
+        ),
+        Node(
+            package="planar_arm_control",
+            executable="pick_place_node",
+            name="pick_place_node",
+            output="screen",
+            parameters=[{"use_sim_time": use_sim_time}],
         ),
         Node(
             package="planar_arm_control",

@@ -92,7 +92,9 @@ class JointTrajectoryBackend(JointCommandBackend):
     ) -> None:
         """Publish the next position setpoint as a short trajectory segment."""
         message = JointTrajectory()
-        message.header.stamp = stamp
+        # A zero stamp starts this rolling setpoint when it is received.
+        message.header.stamp.sec = 0
+        message.header.stamp.nanosec = 0
         message.joint_names = self._joint_names
 
         point = JointTrajectoryPoint()
