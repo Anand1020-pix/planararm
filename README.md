@@ -1,7 +1,8 @@
 # Planar Arm ROS 2 Controller
 
 ROS 2 Jazzy control, teleoperation, and RViz visualization for a 3-DoF planar
-arm. The provided
+arm. The default bringup runs an in-process simulated arm and does not launch
+Gazebo. The provided
 [`planar_arm.py`](src/planar_arm_control/planar_arm_control/planar_arm.py)
 kinematics library is used unchanged.
 
@@ -9,9 +10,8 @@ kinematics library is used unchanged.
 
 The planner's coordinates are planar `(x, y)` with `y >= 0` as the ground
 constraint. The URDF uses ROS's Z-up convention, so planner `y` maps to robot
-`z`; all three revolute joints rotate around the negative Y axis. `base_link`
-is located at the shoulder; Gazebo spawns it 0.2 m above the floor. Link
-lengths are `[3.0, 2.0, 1.5]`, in meters. Joint limits are:
+`z`; all three revolute joints rotate around the negative Y axis. `base_link` is located at the shoulder. Link lengths are `[3.0, 2.0, 1.5]`,
+in meters. Joint limits are:
 
 | Joint | Lower | Upper |
 |---|---:|---:|
@@ -25,7 +25,6 @@ Install ROS 2 Jazzy and the controller/visualization dependencies:
 
 ```bash
 sudo apt install \
-  ros-jazzy-ros2-control ros-jazzy-ros2-controllers \
   ros-jazzy-robot-state-publisher ros-jazzy-xacro ros-jazzy-rviz2 \
   ros-jazzy-joy python3-numpy python3-pyqt5 python3-pyqtgraph
 ```
@@ -40,20 +39,38 @@ source install/setup.bash
 
 ## Launch
 
-Standalone controller plus teleoperation GUI (in-process simulated arm):
+Launch the simulated arm controller, robot state publisher, and teleoperation
+GUI:
 
 ```bash
 ros2 launch planar_arm_control bringup.launch.py
 ```
 
-Robot description, state publisher, and RViz with the simulated controller:
+The GUI's XY and joint controls publish targets to the controller. Start RViz
+manually in another terminal if you want to view the robot model:
+
+```bash
+rviz2 -d "$(ros2 pkg prefix --share planar_arm_control)/rviz/planar_arm.rviz"
+```
+
+Keyboard jogging works while the GUI window has focus. To use a gamepad, start
+its ROS driver in another terminal:
+
+```bash
+ros2 run joy joy_node
+```
+
+Disable the GUI when launching if desired:
+
+```bash
+ros2 launch planar_arm_control bringup.launch.py gui:=false
+```
+
+For RViz-only visualization with the in-process simulated controller:
 
 ```bash
 ros2 launch planar_arm_control display.launch.py
 ```
-
-The gamepad listener subscribes to `/joy`; start a joystick driver separately
-with `ros2 run joy joy_node`.
 
 ## Command and telemetry interfaces
 
@@ -64,12 +81,8 @@ with `ros2 run joy joy_node`.
   constraints are rejected and reported on `/controller_status`.
 * `/joint_target` (`std_msgs/Float64MultiArray`): three joint positions in
   radians. This shares the same path planner and constraint checks.
-* `/joint_states` (`sensor_msgs/JointState`): fixed-rate state in standalone
-  mode. The `ros2_control` backend accepts feedback from a configured
-  joint-state source.
-* `/joint_trajectory_controller/joint_trajectory`
-  (`trajectory_msgs/JointTrajectory`): optional ros2_control backend command
-  stream.
+* `/joint_states` (`sensor_msgs/JointState`): fixed-rate state from the
+  in-process simulated backend.
 
 Example Cartesian command:
 
@@ -81,12 +94,12 @@ ros2 topic pub --once /target_pose geometry_msgs/msg/PointStamped \
 The controller uses a quintic time scaling with zero endpoint velocity and
 acceleration. `publish_rate_hz`, `trajectory_duration`,
 `max_joint_velocity`, `backend_mode`, topic names, joystick rates/steps, and
-the joystick trajectory duration are ROS parameters. `backend_mode` is
-`simulated` for standalone runs and `ros2_control` for use with a configured
-controller. The repository includes Gazebo model assets, but no Gazebo launch
-file. The planner depends on the small
-`JointCommandBackend` boundary; a hardware adapter can replace the backend
-without changing IK, trajectory timing, or constraint validation.
+the joystick trajectory duration are ROS parameters. `bringup.launch.py` uses
+the `simulated` backend. The controller also has an optional `ros2_control`
+trajectory backend for a separately configured hardware system. The planner
+depends on the small `JointCommandBackend` boundary; a hardware adapter can
+replace the backend without changing IK, trajectory timing, or constraint
+validation.
 
 ## Teleoperation
 

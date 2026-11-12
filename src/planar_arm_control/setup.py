@@ -1,3 +1,5 @@
+"""Setuptools configuration for the planar arm ROS 2 package."""
+
 import os
 from glob import glob
 
@@ -17,10 +19,6 @@ setup(
             glob("launch/*.launch.py")),
         (os.path.join("share", package_name, "description", "urdf"),
             glob("description/urdf/*.urdf.xacro")),
-        (os.path.join("share", package_name, "config"),
-            glob("config/*")),
-        (os.path.join("share", package_name, "worlds"),
-            glob("worlds/*")),
         (os.path.join("share", package_name, "rviz"),
             glob("rviz/*")),
     ],

@@ -4,8 +4,8 @@
   <name>planar_arm_control</name>
   <version>0.1.0</version>
   <description>
-    ROS 2 trajectory controller, teleoperation GUI, RViz description, and
-    Gazebo Harmonic integration for a 3-DoF planar manipulator.
+    ROS 2 trajectory controller, teleoperation GUI, and robot description
+    for a 3-DoF planar manipulator.
   </description>
   <maintainer email="hr@kineshia.in">Kineshia Robotics</maintainer>
   <license>Proprietary — for evaluation use only</license>
@@ -21,11 +21,7 @@
   <exec_depend>xacro</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>rviz2</exec_depend>
-  <exec_depend>controller_manager</exec_depend>
-  <exec_depend>joint_state_broadcaster</exec_depend>
   <exec_depend>joint_trajectory_controller</exec_depend>
-  <exec_depend>ros_gz_sim</exec_depend>
-  <exec_depend>gz_ros2_control</exec_depend>
   <exec_depend>joy</exec_depend>
   <!-- PyQt5 and pyqtgraph are installed with pip/apt; see README. -->
 

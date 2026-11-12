@@ -1,7 +1,5 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="planar_arm">
-  <xacro:arg name="controller_config" default=""/>
-
   <material name="base_color">
     <color rgba="0.2 0.2 0.25 1"/>
   </material>
@@ -34,8 +32,6 @@
       <geometry><cylinder radius="0.25" length="0.2"/></geometry>
     </collision>
   </link>
-  <gazebo reference="base_link"><gravity>false</gravity></gazebo>
-
   <link name="link1">
     <inertial>
       <origin xyz="1.5 0 0"/>
@@ -60,8 +56,6 @@
     <limit lower="0" upper="3.14159265" effort="200" velocity="1.0"/>
     <dynamics damping="0.2" friction="0.05"/>
   </joint>
-  <gazebo reference="link1"><gravity>false</gravity></gazebo>
-
   <link name="link2">
     <inertial>
       <origin xyz="1.0 0 0"/>
@@ -86,8 +80,6 @@
     <limit lower="-2.0943951" upper="2.0943951" effort="100" velocity="1.0"/>
     <dynamics damping="0.2" friction="0.05"/>
   </joint>
-  <gazebo reference="link2"><gravity>false</gravity></gazebo>
-
   <link name="link3">
     <inertial>
       <origin xyz="0.75 0 0"/>
@@ -112,8 +104,6 @@
     <limit lower="-2.0943951" upper="2.0943951" effort="50" velocity="1.0"/>
     <dynamics damping="0.2" friction="0.05"/>
   </joint>
-  <gazebo reference="link3"><gravity>false</gravity></gazebo>
-
   <link name="tool_link">
     <inertial>
       <mass value="0.1"/>
@@ -130,33 +120,4 @@
     <child link="tool_link"/>
     <origin xyz="1.5 0 0"/>
   </joint>
-  <gazebo reference="tool_link"><gravity>false</gravity></gazebo>
-
-  <ros2_control name="PlanarArmSystem" type="system">
-    <hardware>
-      <plugin>gz_ros2_control/GazeboSimSystem</plugin>
-    </hardware>
-    <joint name="joint1">
-      <command_interface name="position"/>
-      <state_interface name="position"/>
-      <state_interface name="velocity"/>
-    </joint>
-    <joint name="joint2">
-      <command_interface name="position"/>
-      <state_interface name="position"/>
-      <state_interface name="velocity"/>
-    </joint>
-    <joint name="joint3">
-      <command_interface name="position"/>
-      <state_interface name="position"/>
-      <state_interface name="velocity"/>
-    </joint>
-  </ros2_control>
-
-  <gazebo>
-    <plugin filename="gz_ros2_control-system"
-            name="gz_ros2_control::GazeboSimROS2ControlPlugin">
-      <parameters>$(arg controller_config)</parameters>
-    </plugin>
-  </gazebo>
 </robot>

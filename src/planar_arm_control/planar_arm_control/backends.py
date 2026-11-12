@@ -30,7 +30,7 @@ class JointCommandBackend(ABC):
 
 
 class SimulatedJointBackend(JointCommandBackend):
-    """In-process plant used without hardware or a Gazebo controller."""
+    """In-process arm state used when no hardware backend is attached."""
 
     def __init__(
         self,

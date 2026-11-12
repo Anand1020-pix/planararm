@@ -1,0 +1,2103 @@
+[33mcommit 4b5c55e0d5487dbdd471e057b4bfa375fbc93e9f[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmaster[m[33m)[m
+Author: anand <anandmadhavan10201@gmail.com>
+Date:   Thu Nov 12 21:46:35 2026 +0530
+
+    [200~feat: implement ROS 2 planar arm control and teleoperation
+
+[1mdiff --git a/.gitignore b/.gitignore[m
+[1mnew file mode 100644[m
+[1mindex 0000000..057303b[m
+[1m--- /dev/null[m
+[1m+++ b/.gitignore[m
+[36m@@ -0,0 +1,18 @@[m
+[32m+[m[32m# ROS 2 / colcon build artifacts[m
+[32m+[m[32mbuild/[m
+[32m+[m[32minstall/[m
+[32m+[m[32mlog/[m
+[32m+[m
+[32m+[m[32m# Python artifacts[m
+[32m+[m[32m__pycache__/[m
+[32m+[m[32m*.py[cod][m
+[32m+[m[32m*.egg-info/[m
+[32m+[m[32m.pytest_cache/[m
+[32m+[m[32m.coverage[m
+[32m+[m[32mhtmlcov/[m
+[32m+[m[32m.venv/[m
+[32m+[m[32mvenv/[m
+[32m+[m
+[32m+[m[32m# Editors[m
+[32m+[m[32m.vscode/[m
+[32m+[m[32m.idea/[m
+[1mdiff --git a/README.md b/README.md[m
+[1mnew file mode 100644[m
+[1mindex 0000000..3fbb2d4[m
+[1m--- /dev/null[m
+[1m+++ b/README.md[m
+[36m@@ -0,0 +1,104 @@[m
+[32m+[m[32m# Planar Arm ROS 2 Controller[m
+[32m+[m
+[32m+[m[32mROS 2 Jazzy control, teleoperation, and RViz visualization for a 3-DoF planar[m
+[32m+[m[32marm. The provided[m
+[32m+[m[32m[`planar_arm.py`](src/planar_arm_control/planar_arm_control/planar_arm.py)[m
+[32m+[m[32mkinematics library is used unchanged.[m
+[32m+[m
+[32m+[m[32m## Arm conventions[m
+[32m+[m
+[32m+[m[32mThe planner's coordinates are planar `(x, y)` with `y >= 0` as the ground[m
+[32m+[m[32mconstraint. The URDF uses ROS's Z-up convention, so planner `y` maps to robot[m
+[32m+[m[32m`z`; all three revolute joints rotate around the negative Y axis. `base_link`[m
+[32m+[m[32mis located at the shoulder; Gazebo spawns it 0.2 m above the floor. Link[m
+[32m+[m[32mlengths are `[3.0, 2.0, 1.5]`, in meters. Joint limits are:[m
+[32m+[m
+[32m+[m[32m| Joint | Lower | Upper |[m
+[32m+[m[32m|---|---:|---:|[m
+[32m+[m[32m| joint1 | 0° | 180° |[m
+[32m+[m[32m| joint2 | -120° | 120° |[m
+[32m+[m[32m| joint3 | -120° | 120° |[m
+[32m+[m
+[32m+[m[32m## Build[m
+[32m+[m
+[32m+[m[32mInstall ROS 2 Jazzy and the controller/visualization dependencies:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32msudo apt install \[m
+[32m+[m[32m  ros-jazzy-ros2-control ros-jazzy-ros2-controllers \[m
+[32m+[m[32m  ros-jazzy-robot-state-publisher ros-jazzy-xacro ros-jazzy-rviz2 \[m
+[32m+[m[32m  ros-jazzy-joy python3-numpy python3-pyqt5 python3-pyqtgraph[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mFrom the workspace root:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32msource /opt/ros/jazzy/setup.bash[m
+[32m+[m[32mcolcon build[m
+[32m+[m[32msource install/setup.bash[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32m## Launch[m
+[32m+[m
+[32m+[m[32mStandalone controller plus teleoperation GUI (in-process simulated arm):[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mros2 launch planar_arm_control bringup.launch.py[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mRobot description, state publisher, and RViz with the simulated controller:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mros2 launch planar_arm_control display.launch.py[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mThe gamepad listener subscribes to `/joy`; start a joystick driver separately[m
+[32m+[m[32mwith `ros2 run joy joy_node`.[m
+[32m+[m
+[32m+[m[32m## Command and telemetry interfaces[m
+[32m+[m
+[32m+[m[32m* `/target_pose` (`geometry_msgs/PointStamped`): planar target with `point.x`[m
+[32m+[m[32m  as robot X and `point.z` as planner Y/robot Z, relative to `base_link`.[m
+[32m+[m[32m  `point.y` is ignored. Targets outside the arm's maximum reach, targets[m
+[32m+[m[32m  without a valid IK solution, and paths that violate joint or ground[m
+[32m+[m[32m  constraints are rejected and reported on `/controller_status`.[m
+[32m+[m[32m* `/joint_target` (`std_msgs/Float64MultiArray`): three joint positions in[m
+[32m+[m[32m  radians. This shares the same path planner and constraint checks.[m
+[32m+[m[32m* `/joint_states` (`sensor_msgs/JointState`): fixed-rate state in standalone[m
+[32m+[m[32m  mode. The `ros2_control` backend accepts feedback from a configured[m
+[32m+[m[32m  joint-state source.[m
+[32m+[m[32m* `/joint_trajectory_controller/joint_trajectory`[m
+[32m+[m[32m  (`trajectory_msgs/JointTrajectory`): optional ros2_control backend command[m
+[32m+[m[32m  stream.[m
+[32m+[m
+[32m+[m[32mExample Cartesian command:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mros2 topic pub --once /target_pose geometry_msgs/msg/PointStamped \[m
+[32m+[m[32m  "{header: {frame_id: base_link}, point: {x: 4.0, y: 0.0, z: 2.0}}"[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mThe controller uses a quintic time scaling with zero endpoint velocity and[m
+[32m+[m[32macceleration. `publish_rate_hz`, `trajectory_duration`,[m
+[32m+[m[32m`max_joint_velocity`, `backend_mode`, topic names, joystick rates/steps, and[m
+[32m+[m[32mthe joystick trajectory duration are ROS parameters. `backend_mode` is[m
+[32m+[m[32m`simulated` for standalone runs and `ros2_control` for use with a configured[m
+[32m+[m[32mcontroller. The repository includes Gazebo model assets, but no Gazebo launch[m
+[32m+[m[32mfile. The planner depends on the small[m
+[32m+[m[32m`JointCommandBackend` boundary; a hardware adapter can replace the backend[m
+[32m+[m[32mwithout changing IK, trajectory timing, or constraint validation.[m
+[32m+[m
+[32m+[m[32m## Teleoperation[m
+[32m+[m
+[32m+[m[32m* GUI Cartesian fields send planner XY targets (robot X/Z); joint fields send a[m
+[32m+[m[32m  joint-space target.[m
+[32m+[m[32m  The live plot shows the arm, end-effector coordinates, and joint angles.[m
+[32m+[m[32m* Keyboard controls (when the GUI window has focus): `W/A/S/D` or arrow keys[m
+[32m+[m[32m  jog the end effector in XY; `1/2`, `3/4`, and `5/6` jog joints 1, 2, and 3[m
+[32m+[m[32m  down/up.[m
+[32m+[m[32m* Gamepad: axes 0/1 jog XY (Y is inverted by default for common sticks);[m
+[32m+[m[32m  rising button pairs `0/1`, `2/3`, and `4/5` jog joints 1, 2, and 3 down/up.[m
+[32m+[m[32m  Axis sign/speed and joint jog step are parameters.[m
+[32m+[m
+[32m+[m[32mAll jogs are converted into targets and pass through the same IK/trajectory[m
+[32m+[m[32mplanner and safety checks.[m
+[1mdiff --git a/src/planar_arm_control/config/ros2_controllers.yaml b/src/planar_arm_control/config/ros2_controllers.yaml[m
+[1mnew file mode 100644[m
+[1mindex 0000000..65713d9[m
+[1m--- /dev/null[m
+[1m+++ b/src/planar_arm_control/config/ros2_controllers.yaml[m
+[36m@@ -0,0 +1,28 @@[m
+[32m+[m[32mcontroller_manager:[m
+[32m+[m[32m  ros__parameters:[m
+[32m+[m[32m    update_rate: 100[m
+[32m+[m[32m    use_sim_time: true[m
+[32m+[m[32m    joint_state_broadcaster:[m
+[32m+[m[32m      type: joint_state_broadcaster/JointStateBroadcaster[m
+[32m+[m[32m    joint_trajectory_controller:[m
+[32m+[m[32m      type: joint_trajectory_controller/JointTrajectoryController[m
+[32m+[m
+[32m+[m[32mjoint_state_broadcaster:[m
+[32m+[m[32m  ros__parameters:[m
+[32m+[m[32m    use_sim_time: true[m
+[32m+[m
+[32m+[m[32mjoint_trajectory_controller:[m
+[32m+[m[32m  ros__parameters:[m
+[32m+[m[32m    use_sim_time: true[m
+[32m+[m[32m    joints:[m
+[32m+[m[32m      - joint1[m
+[32m+[m[32m      - joint2[m
+[32m+[m[32m      - joint3[m
+[32m+[m[32m    command_interfaces:[m
+[32m+[m[32m      - position[m
+[32m+[m[32m    state_interfaces:[m
+[32m+[m[32m      - position[m
+[32m+[m[32m      - velocity[m
+[32m+[m[32m    state_publish_rate: 50.0[m
+[32m+[m[32m    action_monitor_rate: 20.0[m
+[32m+[m[32m    allow_partial_joints_goal: false[m
+[1mdiff --git a/src/planar_arm_control/description/urdf/planar_arm.urdf b/src/planar_arm_control/description/urdf/planar_arm.urdf[m
+[1mnew file mode 100644[m
+[1mindex 0000000..739ee1b[m
+[1m--- /dev/null[m
+[1m+++ b/src/planar_arm_control/description/urdf/planar_arm.urdf[m
+[36m@@ -0,0 +1,102 @@[m
+[32m+[m
+[32m+[m[32m<?xml version="1.0"?>[m
+[32m+[m[32m<robot name="planar_arm">[m
+[32m+[m
+[32m+[m[32m  <!-- Base -->[m
+[32m+[m[32m  <link name="base_link">[m
+[32m+[m[32m    <visual>[m
+[32m+[m[32m      <origin xyz="0 0 0.1"/>[m
+[32m+[m[32m      <geometry>[m
+[32m+[m[32m        <cylinder radius="0.25" length="0.2"/>[m
+[32m+[m[32m      </geometry>[m
+[32m+[m[32m      <material name="base_color">[m
+[32m+[m[32m        <color rgba="0.2 0.2 0.25 1"/>[m
+[32m+[m[32m      </material>[m
+[32m+[m[32m    </visual>[m
+[32m+[m[32m  </link>[m
+[32m+[m
+[32m+[m[32m  <!-- Link 1: Length 3.0 -->[m
+[32m+[m[32m  <link name="link1">[m
+[32m+[m[32m    <visual>[m
+[32m+[m[32m      <origin xyz="1.5 0 0"/>[m
+[32m+[m[32m      <geometry>[m
+[32m+[m[32m        <box size="3.0 0.15 0.15"/>[m
+[32m+[m[32m      </geometry>[m
+[32m+[m[32m      <material name="link_color">[m
+[32m+[m[32m        <color rgba="0.1 0.4 0.9 1"/>[m
+[32m+[m[32m      </material>[m
+[32m+[m[32m    </visual>[m
+[32m+[m[32m  </link>[m
+[32m+[m
+[32m+[m[32m  <joint name="joint1" type="revolute">[m
+[32m+[m[32m    <parent link="base_link"/>[m
+[32m+[m[32m    <child link="link1"/>[m
+[32m+[m[32m    <origin xyz="0 0 0.2"/>[m
+[32m+[m[32m    <axis xyz="0 0 1"/>[m
+[32m+[m[32m    <limit lower="0" upper="3.14159265"[m
+[32m+[m[32m           effort="10" velocity="1.0"/>[m
+[32m+[m[32m  </joint>[m
+[32m+[m
+[32m+[m[32m  <!-- Link 2: Length 2.0 -->[m
+[32m+[m[32m  <link name="link2">[m
+[32m+[m[32m    <visual>[m
+[32m+[m[32m      <origin xyz="1.0 0 0"/>[m
+[32m+[m[32m      <geometry>[m
+[32m+[m[32m        <box size="2.0 0.13 0.13"/>[m
+[32m+[m[32m      </geometry>[m
+[32m+[m[32m      <material name="link2_color">[m
+[32m+[m[32m        <color rgba="0.1 0.8 0.4 1"/>[m
+[32m+[m[32m      </material>[m
+[32m+[m[32m    </visual>[m
+[32m+[m[32m  </link>[m
+[32m+[m
+[32m+[m[32m  <joint name="joint2" type="revolute">[m
+[32m+[m[32m    <parent link="link1"/>[m
+[32m+[m[32m    <child link="link2"/>[m
+[32m+[m[32m    <origin xyz="3.0 0 0"/>[m
+[32m+[m[32m    <axis xyz="0 0 1"/>[m
+[32m+[m[32m    <limit lower="-2.0943951" upper="2.0943951"[m
+[32m+[m[32m           effort="10" velocity="1.0"/>[m
+[32m+[m[32m  </joint>[m
+[32m+[m
+[32m+[m[32m  <!-- Link 3: Length 1.5 -->[m
+[32m+[m[32m  <link name="link3">[m
+[32m+[m[32m    <visual>[m
+[32m+[m[32m      <origin xyz="0.75 0 0"/>[m
+[32m+[m[32m      <geometry>[m
+[32m+[m[32m        <box size="1.5 0.11 0.11"/>[m
+[32m+[m[32m      </geometry>[m
+[32m+[m[32m      <material name="link3_color">[m
+[32m+[m[32m        <color rgba="0.9 0.4 0.1 1"/>[m
+[32m+[m[32m      </material>[m
+[32m+[m[32m    </visual>[m
+[32m+[m[32m  </link>[m
+[32m+[m
+[32m+[m[32m  <joint name="joint3" type="revolute">[m
+[32m+[m[32m    <parent link="link2"/>[m
+[32m+[m[32m    <child link="link3"/>[m
+[32m+[m[32m    <origin xyz="2.0 0 0"/>[m
+[32m+[m[32m    <axis xyz="0 0 1"/>[m
+[32m+[m[32m    <limit lower="-2.0943951" upper="2.0943951"[m
+[32m+[m[32m           effort="10" velocity="1.0"/>[m
+[32m+[m[32m  </joint>[m
+[32m+[m
+[32m+[m[32m  <!-- End effector -->[m
+[32m+[m[32m  <link name="tool_link">[m
+[32m+[m[32m    <visual>[m
+[32m+[m[32m      <geometry>[m
+[32m+[m[32m        <sphere radius="0.12"/>[m
+[32m+[m[32m      </geometry>[m
+[32m+[m[32m      <material name="tool_color">[m
+[32m+[m[32m        <color rgba="1 0.1 0.1 1"/>[m
+[32m+[m[32m      </material>[m
+[32m+[m[32m    </visual>[m
+[32m+[m[32m  </link>[m
+[32m+[m
+[32m+[m[32m  <joint name="tool_fixed_joint" type="fixed">[m
+[32m+[m[32m    <parent link="link3"/>[m
+[32m+[m[32m    <child link="tool_link"/>[m
+[32m+[m[32m    <origin xyz="1.5 0 0"/>[m
+[32m+[m[32m  </joint>[m
+[32m+[m
+[32m+[m[32m</robot>[m
+[1mdiff --git a/src/planar_arm_control/description/urdf/planar_arm.urdf.xacro b/src/planar_arm_control/description/urdf/planar_arm.urdf.xacro[m
+[1mnew file mode 100644[m
+[1mindex 0000000..6fdc69c[m
+[1m--- /dev/null[m
+[1m+++ b/src/planar_arm_control/description/urdf/planar_arm.urdf.xacro[m
+[36m@@ -0,0 +1,162 @@[m
+[32m+[m[32m<?xml version="1.0"?>[m
+[32m+[m[32m<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="planar_arm">[m
+[32m+[m[32m  <xacro:arg name="controller_config" default=""/>[m
+[32m+[m
+[32m+[m[32m  <material name="base_color">[m
+[32m+[m[32m    <color rgba="0.2 0.2 0.25 1"/>[m
+[32m+[m[32m  </material>[m
+[32m+[m[32m  <material name="link1_color">[m
+[32m+[m[32m    <color rgba="0.1 0.4 0.9 1"/>[m
+[32m+[m[32m  </material>[m
+[32m+[m[32m  <material name="link2_color">[m
+[32m+[m[32m    <color rgba="0.1 0.8 0.4 1"/>[m
+[32m+[m[32m  </material>[m
+[32m+[m[32m  <material name="link3_color">[m
+[32m+[m[32m    <color rgba="0.9 0.4 0.1 1"/>[m
+[32m+[m[32m  </material>[m
+[32m+[m[32m  <material name="tool_color">[m
+[32m+[m[32m    <color rgba="1 0.1 0.1 1"/>[m
+[32m+[m[32m  </material>[m
+[32m+[m
+[32m+[m[32m  <link name="base_link">[m
+[32m+[m[32m    <inertial>[m
+[32m+[m[32m      <origin xyz="0 0 -0.1"/>[m
+[32m+[m[32m      <mass value="2.0"/>[m
+[32m+[m[32m      <inertia ixx="0.03" ixy="0" ixz="0" iyy="0.03" iyz="0" izz="0.04"/>[m
+[32m+[m[32m    </inertial>[m
+[32m+[m[32m    <visual>[m
+[32m+[m[32m      <origin xyz="0 0 -0.1"/>[m
+[32m+[m[32m      <geometry><cylinder radius="0.25" length="0.2"/></geometry>[m
+[32m+[m[32m      <material name="base_color"/>[m
+[32m+[m[32m    </visual>[m
+[32m+[m[32m    <collision>[m
+[32m+[m[32m      <origin xyz="0 0 -0.1"/>[m
+[32m+[m[32m      <geometry><cylinder radius="0.25" length="0.2"/></geometry>[m
+[32m+[m[32m    </collision>[m
+[32m+[m[32m  </link>[m
+[32m+[m[32m  <gazebo reference="base_link"><gravity>false</gravity></gazebo>[m
+[32m+[m
+[32m+[m[32m  <link name="link1">[m
+[32m+[m[32m    <inertial>[m
+[32m+[m[32m      <origin xyz="1.5 0 0"/>[m
+[32m+[m[32m      <mass value="2.0"/>[m
+[32m+[m[32m      <inertia ixx="0.005" ixy="0" ixz="0" iyy="1.51" iyz="0" izz="1.51"/>[m
+[32m+[m[32m    </inertial>[m
+[32m+[m[32m    <visual>[m
+[32m+[m[32m      <origin xyz="1.5 0 0"/>[m
+[32m+[m[32m      <geometry><box size="3.0 0.15 0.15"/></geometry>[m
+[32m+[m[32m      <material name="link1_color"/>[m
+[32m+[m[32m    </visual>[m
+[32m+[m[32m    <collision>[m
+[32m+[m[32m      <origin xyz="1.5 0 0"/>[m
+[32m+[m[32m      <geometry><box size="3.0 0.15 0.15"/></geometry>[m
+[32m+[m[32m    </collision>[m
+[32m+[m[32m  </link>[m
+[32m+[m[32m  <joint name="joint1" type="revolute">[m
+[32m+[m[32m    <parent link="base_link"/>[m
+[32m+[m[32m    <child link="link1"/>[m
+[32m+[m[32m    <origin xyz="0 0 0"/>[m
+[32m+[m[32m    <axis xyz="0 -1 0"/>[m
+[32m+[m[32m    <limit lower="0" upper="3.14159265" effort="200" velocity="1.0"/>[m
+[32m+[m[32m    <dynamics damping="0.2" friction="0.05"/>[m
+[32m+[m[32m  </joint>[m
+[32m+[m[32m  <gazebo reference="link1"><gravity>false</gravity></gazebo>[m
+[32m+[m
+[32m+[m[32m  <link name="link2">[m
+[32m+[m[32m    <inertial>[m
+[32m+[m[32m      <origin xyz="1.0 0 0"/>[m
+[32m+[m[32m      <mass value="1.3"/>[m
+[32m+[m[32m      <inertia ixx="0.003" ixy="0" ixz="0" iyy="0.44" iyz="0" izz="0.44"/>[m
+[32m+[m[32m    </inertial>[m
+[32m+[m[32m    <visual>[m
+[32m+[m[32m      <origin xyz="1.0 0 0"/>[m
+[32m+[m[32m      <geometry><box size="2.0 0.13 0.13"/></geometry>[m
+[32m+[m[32m      <material name="link2_color"/>[m
+[32m+[m[32m    </visual>[m
+[32m+[m[32m    <collision>[m
+[32m+[m[32m      <origin xyz="1.0 0 0"/>[m
+[32m+[m[32m      <geometry><box size="2.0 0.13 0.13"/></geometry>[m
+[32m+[m[32m    </collision>[m
+[32m+[m[32m  </link>[m
+[32m+[m[32m  <joint name="joint2" type="revolute">[m
+[32m+[m[32m    <parent link="link1"/>[m
+[32m+[m[32m    <child link="link2"/>[m
+[32m+[m[32m    <origin xyz="3.0 0 0"/>[m
+[32m+[m[32m    <axis xyz="0 -1 0"/>[m
+[32m+[m[32m    <limit lower="-2.0943951" upper="2.0943951" effort="100" velocity="1.0"/>[m
+[32m+[m[32m    <dynamics damping="0.2" friction="0.05"/>[m
+[32m+[m[32m  </joint>[m
+[32m+[m[32m  <gazebo reference="link2"><gravity>false</gravity></gazebo>[m
+[32m+[m
+[32m+[m[32m  <link name="link3">[m
+[32m+[m[32m    <inertial>[m
+[32m+[m[32m      <origin xyz="0.75 0 0"/>[m
+[32m+[m[32m      <mass value="1.0"/>[m
+[32m+[m[32m      <inertia ixx="0.002" ixy="0" ixz="0" iyy="0.19" iyz="0" izz="0.19"/>[m
+[32m+[m[32m    </inertial>[m
+[32m+[m[32m    <visual>[m
+[32m+[m[32m      <origin xyz="0.75 0 0"/>[m
+[32m+[m[32m      <geometry><box size="1.5 0.11 0.11"/></geometry>[m
+[32m+[m[32m      <material name="link3_color"/>[m
+[32m+[m[32m    </visual>[m
+[32m+[m[32m    <collision>[m
+[32m+[m[32m      <origin xyz="0.75 0 0"/>[m
+[32m+[m[32m      <geometry><box size="1.5 0.11 0.11"/></geometry>[m
+[32m+[m[32m    </collision>[m
+[32m+[m[32m  </link>[m
+[32m+[m[32m  <joint name="joint3" type="revolute">[m
+[32m+[m[32m    <parent link="link2"/>[m
+[32m+[m[32m    <child link="link3"/>[m
+[32m+[m[32m    <origin xyz="2.0 0 0"/>[m
+[32m+[m[32m    <axis xyz="0 -1 0"/>[m
+[32m+[m[32m    <limit lower="-2.0943951" upper="2.0943951" effort="50" velocity="1.0"/>[m
+[32m+[m[32m    <dynamics damping="0.2" friction="0.05"/>[m
+[32m+[m[32m  </joint>[m
+[32m+[m[32m  <gazebo reference="link3"><gravity>false</gravity></gazebo>[m
+[32m+[m
+[32m+[m[32m  <link name="tool_link">[m
+[32m+[m[32m    <inertial>[m
+[32m+[m[32m      <mass value="0.1"/>[m
+[32m+[m[32m      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>[m
+[32m+[m[32m    </inertial>[m
+[32m+[m[32m    <visual>[m
+[32m+[m[32m      <geometry><sphere radius="0.12"/></geometry>[m
+[32m+[m[32m      <material name="tool_color"/>[m
+[32m+[m[32m    </visual>[m
+[32m+[m[32m    <collision><geometry><sphere radius="0.12"/></geometry></collision>[m
+[32m+[m[32m  </link>[m
+[32m+[m[32m  <joint name="tool_fixed_joint" type="fixed">[m
+[32m+[m[32m    <parent link="link3"/>[m
+[32m+[m[32m    <child link="tool_link"/>[m
+[32m+[m[32m    <origin xyz="1.5 0 0"/>[m
+[32m+[m[32m  </joint>[m
+[32m+[m[32m  <gazebo reference="tool_link"><gravity>false</gravity></gazebo>[m
+[32m+[m
+[32m+[m[32m  <ros2_control name="PlanarArmSystem" type="system">[m
+[32m+[m[32m    <hardware>[m
+[32m+[m[32m      <plugin>gz_ros2_control/GazeboSimSystem</plugin>[m
+[32m+[m[32m    </hardware>[m
+[32m+[m[32m    <joint name="joint1">[m
+[32m+[m[32m      <command_interface name="position"/>[m
+[32m+[m[32m      <state_interface name="position"/>[m
+[32m+[m[32m      <state_interface name="velocity"/>[m
+[32m+[m[32m    </joint>[m
+[32m+[m[32m    <joint name="joint2">[m
+[32m+[m[32m      <command_interface name="position"/>[m
+[32m+[m[32m      <state_interface name="position"/>[m
+[32m+[m[32m      <state_interface name="velocity"/>[m
+[32m+[m[32m    </joint>[m
+[32m+[m[32m    <joint name="joint3">[m
+[32m+[m[32m      <command_interface name="position"/>[m
+[32m+[m[32m      <state_interface name="position"/>[m
+[32m+[m[32m      <state_interface name="velocity"/>[m
+[32m+[m[32m    </joint>[m
+[32m+[m[32m  </ros2_control>[m
+[32m+[m
+[32m+[m[32m  <gazebo>[m
+[32m+[m[32m    <plugin filename="gz_ros2_control-system"[m
+[32m+[m[32m            name="gz_ros2_control::GazeboSimROS2ControlPlugin">[m
+[32m+[m[32m      <parameters>$(arg controller_config)</parameters>[m
+[32m+[m[32m    </plugin>[m
+[32m+[m[32m  </gazebo>[m
+[32m+[m[32m</robot>[m
+[1mdiff --git a/src/planar_arm_control/launch/bringup.launch.py b/src/planar_arm_control/launch/bringup.launch.py[m
+[1mnew file mode 100644[m
+[1mindex 0000000..b0a79be[m
+[1m--- /dev/null[m
+[1m+++ b/src/planar_arm_control/launch/bringup.launch.py[m
+[36m@@ -0,0 +1,23 @@[m
+[32m+[m[32m"""Launch the standalone simulated controller and teleoperation GUI."""[m
+[32m+[m
+[32m+[m[32mfrom launch import LaunchDescription[m
+[32m+[m[32mfrom launch_ros.actions import Node[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef generate_launch_description():[m
+[32m+[m[32m    """Launch the default simulated controller and GUI."""[m
+[32m+[m[32m    return LaunchDescription([[m
+[32m+[m[32m        Node([m
+[32m+[m[32m            package="planar_arm_control",[m
+[32m+[m[32m            executable="controller_node",[m
+[32m+[m[32m            name="controller_node",[m
+[32m+[m[32m            output="screen",[m
+[32m+[m[32m            parameters=[{"backend_mode": "simulated"}],[m
+[32m+[m[32m        ),[m
+[32m+[m[32m        Node([m
+[32m+[m[32m            package="planar_arm_control",[m
+[32m+[m[32m            executable="gui_node",[m
+[32m+[m[32m            name="gui_node",[m
+[32m+[m[32m            output="screen",[m
+[32m+[m[32m        ),[m
+[32m+[m[32m    ])[m
+[1mdiff --git a/src/planar_arm_control/launch/display.launch.py b/src/planar_arm_control/launch/display.launch.py[m
+[1mnew file mode 100644[m
+[1mindex 0000000..a53168d[m
+[1m--- /dev/null[m
+[1m+++ b/src/planar_arm_control/launch/display.launch.py[m
+[36m@@ -0,0 +1,56 @@[m
+[32m+[m[32m"""Launch the simulated arm state publisher and RViz display."""[m
+[32m+[m
+[32m+[m[32mfrom launch import LaunchDescription[m
+[32m+[m[32mfrom launch.actions import DeclareLaunchArgument[m
+[32m+[m[32mfrom launch.substitutions import ([m
+[32m+[m[32m    Command,[m
+[32m+[m[32m    LaunchConfiguration,[m
+[32m+[m[32m    PathJoinSubstitution,[m
+[32m+[m[32m)[m
+[32m+[m[32mfrom launch_ros.actions import Node[m
+[32m+[m[32mfrom launch_ros.substitutions import FindPackageShare[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef generate_launch_description():[m
+[32m+[m[32m    """Launch the arm model, simulated joint states, and RViz."""[m
+[32m+[m[32m    package_share = FindPackageShare("planar_arm_control")[m
+[32m+[m[32m    description_file = PathJoinSubstitution([m
+[32m+[m[32m        [package_share, "description", "urdf", "planar_arm.urdf.xacro"][m
+[32m+[m[32m    )[m
+[32m+[m[32m    rviz_config = PathJoinSubstitution([m
+[32m+[m[32m        [package_share, "rviz", "planar_arm.rviz"][m
+[32m+[m[32m    )[m
+[32m+[m[32m    robot_description = Command(["xacro ", description_file])[m
+[32m+[m[32m    use_sim_time = LaunchConfiguration("use_sim_time")[m
+[32m+[m
+[32m+[m[32m    return LaunchDescription([[m
+[32m+[m[32m        DeclareLaunchArgument("use_sim_time", default_value="false"),[m
+[32m+[m[32m        Node([m
+[32m+[m[32m            package="planar_arm_control",[m
+[32m+[m[32m            executable="controller_node",[m
+[32m+[m[32m            name="controller_node",[m
+[32m+[m[32m            output="screen",[m
+[32m+[m[32m            parameters=[[m
+[32m+[m[32m                {"backend_mode": "simulated"},[m
+[32m+[m[32m                {"use_sim_time": use_sim_time},[m
+[32m+[m[32m            ],[m
+[32m+[m[32m        ),[m
+[32m+[m[32m        Node([m
+[32m+[m[32m            package="robot_state_publisher",[m
+[32m+[m[32m            executable="robot_state_publisher",[m
+[32m+[m[32m            name="robot_state_publisher",[m
+[32m+[m[32m            output="screen",[m
+[32m+[m[32m            parameters=[[m
+[32m+[m[32m                {"robot_description": robot_description},[m
+[32m+[m[32m                {"use_sim_time": use_sim_time},[m
+[32m+[m[32m            ],[m
+[32m+[m[32m        ),[m
+[32m+[m[32m        Node([m
+[32m+[m[32m            package="rviz2",[m
+[32m+[m[32m            executable="rviz2",[m
+[32m+[m[32m            name="rviz2",[m
+[32m+[m[32m            arguments=["-d", rviz_config],[m
+[32m+[m[32m            parameters=[{"use_sim_time": use_sim_time}],[m
+[32m+[m[32m            output="screen",[m
+[32m+[m[32m        ),[m
+[32m+[m[32m    ])[m
+[1mdiff --git a/src/planar_arm_control/package.xml b/src/planar_arm_control/package.xml[m
+[1mnew file mode 100644[m
+[1mindex 0000000..ddf87fc[m
+[1m--- /dev/null[m
+[1m+++ b/src/planar_arm_control/package.xml[m
+[36m@@ -0,0 +1,40 @@[m
+[32m+[m[32m<?xml version="1.0"?>[m
+[32m+[m[32m<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>[m
+[32m+[m[32m<package format="3">[m
+[32m+[m[32m  <name>planar_arm_control</name>[m
+[32m+[m[32m  <version>0.1.0</version>[m
+[32m+[m[32m  <description>[m
+[32m+[m[32m    ROS 2 trajectory controller, teleoperation GUI, RViz description, and[m
+[32m+[m[32m    Gazebo Harmonic integration for a 3-DoF planar manipulator.[m
+[32m+[m[32m  </description>[m
+[32m+[m[32m  <maintainer email="hr@kineshia.in">Kineshia Robotics</maintainer>[m
+[32m+[m[32m  <license>Proprietary — for evaluation use only</license>[m
+[32m+[m
+[32m+[m[32m  <exec_depend>rclpy</exec_depend>[m
+[32m+[m[32m  <exec_depend>launch</exec_depend>[m
+[32m+[m[32m  <exec_depend>launch_ros</exec_depend>[m
+[32m+[m[32m  <exec_depend>sensor_msgs</exec_depend>[m
+[32m+[m[32m  <exec_depend>geometry_msgs</exec_depend>[m
+[32m+[m[32m  <exec_depend>std_msgs</exec_depend>[m
+[32m+[m[32m  <exec_depend>trajectory_msgs</exec_depend>[m
+[32m+[m[32m  <exec_depend>python3-numpy</exec_depend>[m
+[32m+[m[32m  <exec_depend>xacro</exec_depend>[m
+[32m+[m[32m  <exec_depend>robot_state_publisher</exec_depend>[m
+[32m+[m[32m  <exec_depend>rviz2</exec_depend>[m
+[32m+[m[32m  <exec_depend>controller_manager</exec_depend>[m
+[32m+[m[32m  <exec_depend>joint_state_broadcaster</exec_depend>[m
+[32m+[m[32m  <exec_depend>joint_trajectory_controller</exec_depend>[m
+[32m+[m[32m  <exec_depend>ros_gz_sim</exec_depend>[m
+[32m+[m[32m  <exec_depend>gz_ros2_control</exec_depend>[m
+[32m+[m[32m  <exec_depend>joy</exec_depend>[m
+[32m+[m[32m  <!-- PyQt5 and pyqtgraph are installed with pip/apt; see README. -->[m
+[32m+[m
+[32m+[m[32m  <test_depend>ament_copyright</test_depend>[m
+[32m+[m[32m  <test_depend>ament_flake8</test_depend>[m
+[32m+[m[32m  <test_depend>ament_pep257</test_depend>[m
+[32m+[m[32m  <test_depend>python3-pytest</test_depend>[m
+[32m+[m
+[32m+[m[32m  <export>[m
+[32m+[m[32m    <build_type>ament_python</build_type>[m
+[32m+[m[32m  </export>[m
+[32m+[m[32m</package>[m
+[1mdiff --git a/src/planar_arm_control/planar_arm_control/__init__.py b/src/planar_arm_control/planar_arm_control/__init__.py[m
+[1mnew file mode 100644[m
+[1mindex 0000000..e69de29[m
+[1mdiff --git a/src/planar_arm_control/planar_arm_control/backends.py b/src/planar_arm_control/planar_arm_control/backends.py[m
+[1mnew file mode 100644[m
+[1mindex 0000000..7a400e9[m
+[1m--- /dev/null[m
+[1m+++ b/src/planar_arm_control/planar_arm_control/backends.py[m
+[36m@@ -0,0 +1,105 @@[m
+[32m+[m[32m"""Position-command backends shared by the planner/controller node."""[m
+[32m+[m
+[32m+[m[32mfrom abc import ABC, abstractmethod[m
+[32m+[m
+[32m+[m[32mfrom trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint[m
+[32m+[m
+[32m+[m
+[32m+[m[32mclass JointCommandBackend(ABC):[m
+[32m+[m[32m    """Actuator boundary used by the trajectory planner."""[m
+[32m+[m
+[32m+[m[32m    @abstractmethod[m
+[32m+[m[32m    def current_positions(self) -> list[float]:[m
+[32m+[m[32m        """Return the most recent joint positions in radians."""[m
+[32m+[m
+[32m+[m[32m    @abstractmethod[m
+[32m+[m[32m    def command_positions([m
+[32m+[m[32m        self,[m
+[32m+[m[32m        positions: list[float],[m
+[32m+[m[32m        stamp,[m
+[32m+[m[32m        interpolation_period: float,[m
+[32m+[m[32m    ) -> None:[m
+[32m+[m[32m        """Send a position setpoint without changing the planning logic."""[m
+[32m+[m
+[32m+[m[32m    def update_feedback([m
+[32m+[m[32m        self,[m
+[32m+[m[32m        names: list[str],[m
+[32m+[m[32m        positions: list[float],[m
+[32m+[m[32m    ) -> None:[m
+[32m+[m[32m        """Update measured positions when the backend has external feedback."""[m
+[32m+[m
+[32m+[m
+[32m+[m[32mclass SimulatedJointBackend(JointCommandBackend):[m
+[32m+[m[32m    """In-process plant used without hardware or a Gazebo controller."""[m
+[32m+[m
+[32m+[m[32m    def __init__([m
+[32m+[m[32m        self,[m
+[32m+[m[32m        joint_names: list[str],[m
+[32m+[m[32m        initial_positions: list[float],[m
+[32m+[m[32m    ):[m
+[32m+[m[32m        """Create an in-memory position state for the configured joints."""[m
+[32m+[m[32m        self._joint_names = list(joint_names)[m
+[32m+[m[32m        self._positions = list(initial_positions)[m
+[32m+[m
+[32m+[m[32m    def current_positions(self) -> list[float]:[m
+[32m+[m[32m        """Return the most recently commanded positions."""[m
+[32m+[m[32m        return list(self._positions)[m
+[32m+[m
+[32m+[m[32m    def command_positions([m
+[32m+[m[32m        self,[m
+[32m+[m[32m        positions: list[float],[m
+[32m+[m[32m        stamp,[m
+[32m+[m[32m        interpolation_period: float,[m
+[32m+[m[32m    ) -> None:[m
+[32m+[m[32m        """Update the in-memory arm state to the sampled setpoint."""[m
+[32m+[m[32m        self._positions = list(positions)[m
+[32m+[m
+[32m+[m
+[32m+[m[32mclass JointTrajectoryBackend(JointCommandBackend):[m
+[32m+[m[32m    """Adapter for ros2_control's JointTrajectoryController topic interface."""[m
+[32m+[m
+[32m+[m[32m    def __init__(self, joint_names: list[str], publisher):[m
+[32m+[m[32m        """Use a ROS publisher for commands and joint feedback."""[m
+[32m+[m[32m        self._joint_names = list(joint_names)[m
+[32m+[m[32m        self._publisher = publisher[m
+[32m+[m[32m        self._positions: list[float] | None = None[m
+[32m+[m
+[32m+[m[32m    def current_positions(self) -> list[float]:[m
+[32m+[m[32m        """Return the latest measured positions or report missing feedback."""[m
+[32m+[m[32m        if self._positions is None:[m
+[32m+[m[32m            raise RuntimeError([m
+[32m+[m[32m                "waiting for joint-state feedback from ros2_control"[m
+[32m+[m[32m            )[m
+[32m+[m[32m        return list(self._positions)[m
+[32m+[m
+[32m+[m[32m    def update_feedback([m
+[32m+[m[32m        self,[m
+[32m+[m[32m        names: list[str],[m
+[32m+[m[32m        positions: list[float],[m
+[32m+[m[32m    ) -> None:[m
+[32m+[m[32m        """Store complete feedback in the backend's configured joint order."""[m
+[32m+[m[32m        by_name = dict(zip(names, positions))[m
+[32m+[m[32m        if all(name in by_name for name in self._joint_names):[m
+[32m+[m[32m            self._positions = [[m
+[32m+[m[32m                float(by_name[name]) for name in self._joint_names[m
+[32m+[m[32m            ][m
+[32m+[m
+[32m+[m[32m    def command_positions([m
+[32m+[m[32m        self,[m
+[32m+[m[32m        positions: list[float],[m
+[32m+[m[32m        stamp,[m
+[32m+[m[32m        interpolation_period: float,[m
+[32m+[m[32m    ) -> None:[m
+[32m+[m[32m        """Publish the next position setpoint as a short trajectory segment."""[m
+[32m+[m[32m        message = JointTrajectory()[m
+[32m+[m[32m        message.header.stamp = stamp[m
+[32m+[m[32m        message.joint_names = self._joint_names[m
+[32m+[m
+[32m+[m[32m        point = JointTrajectoryPoint()[m
+[32m+[m[32m        point.positions = list(positions)[m
+[32m+[m[32m        point.time_from_start.sec = int(interpolation_period)[m
+[32m+[m[32m        point.time_from_start.nanosec = int([m
+[32m+[m[32m            (interpolation_period - int(interpolation_period)) * 1_000_000_000[m
+[32m+[m[32m        )[m
+[32m+[m[32m        message.points = [point][m
+[32m+[m[32m        self._publisher.publish(message)[m
+[1mdiff --git a/src/planar_arm_control/planar_arm_control/controller_node.py b/src/planar_arm_control/planar_arm_control/controller_node.py[m
+[1mnew file mode 100644[m
+[1mindex 0000000..5d10cab[m
+[1m--- /dev/null[m
+[1m+++ b/src/planar_arm_control/planar_arm_control/controller_node.py[m
+[36m@@ -0,0 +1,423 @@[m
+[32m+[m[32m#!/usr/bin/env python3[m
+[32m+[m[32m"""ROS 2 target planner and position-command controller for the planar arm."""[m
+[32m+[m
+[32m+[m[32mimport math[m
+[32m+[m[32mimport time[m
+[32m+[m
+[32m+[m[32mimport rclpy[m
+[32m+[m[32mfrom geometry_msgs.msg import PointStamped[m
+[32m+[m[32mfrom rclpy.node import Node[m
+[32m+[m[32mfrom sensor_msgs.msg import JointState, Joy[m
+[32m+[m[32mfrom std_msgs.msg import Float64MultiArray, String[m
+[32m+[m[32mfrom trajectory_msgs.msg import JointTrajectory[m
+[32m+[m
+[32m+[m[32mfrom planar_arm_control.backends import ([m
+[32m+[m[32m    JointTrajectoryBackend,[m
+[32m+[m[32m    SimulatedJointBackend,[m
+[32m+[m[32m)[m
+[32m+[m[32mfrom planar_arm_control.motion import ([m
+[32m+[m[32m    make_trajectory,[m
+[32m+[m[32m    solve_xy_target,[m
+[32m+[m[32m    trajectory_respects_constraints,[m
+[32m+[m[32m)[m
+[32m+[m[32mfrom planar_arm_control.planar_arm import PlanarArm[m
+[32m+[m
+[32m+[m[32mLINK_LENGTHS = [3.0, 2.0, 1.5][m
+[32m+[m
+[32m+[m
+[32m+[m[32mclass ControllerNode(Node):[m
+[32m+[m[32m    """Plan motion goals safely and drive the configured arm backend."""[m
+[32m+[m
+[32m+[m[32m    def __init__(self):[m
+[32m+[m[32m        """Create the ROS interfaces and fixed-rate control timer."""[m
+[32m+[m[32m        super().__init__("controller_node")[m
+[32m+[m[32m        self.arm = PlanarArm(LINK_LENGTHS)[m
+[32m+[m
+[32m+[m[32m        self.declare_parameter("publish_rate_hz", 50.0)[m
+[32m+[m[32m        self.declare_parameter("trajectory_duration", 2.0)[m
+[32m+[m[32m        self.declare_parameter("max_joint_velocity", 1.0)[m
+[32m+[m[32m        self.declare_parameter("backend_mode", "simulated")[m
+[32m+[m[32m        self.declare_parameter("joint_names", ["joint1", "joint2", "joint3"])[m
+[32m+[m[32m        self.declare_parameter("target_topic", "/target_pose")[m
+[32m+[m[32m        self.declare_parameter("joint_target_topic", "/joint_target")[m
+[32m+[m[32m        self.declare_parameter("joint_states_topic", "/joint_states")[m
+[32m+[m[32m        self.declare_parameter("joy_topic", "/joy")[m
+[32m+[m[32m        self.declare_parameter([m
+[32m+[m[32m            "trajectory_command_topic",[m
+[32m+[m[32m            "/joint_trajectory_controller/joint_trajectory",[m
+[32m+[m[32m        )[m
+[32m+[m[32m        self.declare_parameter("joystick_xy_speed", 0.5)[m
+[32m+[m[32m        self.declare_parameter("joystick_y_axis_sign", -1.0)[m
+[32m+[m[32m        self.declare_parameter("joystick_joint_step_rad", 0.05)[m
+[32m+[m[32m        self.declare_parameter("joystick_trajectory_duration", 0.15)[m
+[32m+[m
+[32m+[m[32m        self.publish_rate_hz = float([m
+[32m+[m[32m            self.get_parameter("publish_rate_hz").value[m
+[32m+[m[32m        )[m
+[32m+[m[32m        if ([m
+[32m+[m[32m            not math.isfinite(self.publish_rate_hz)[m
+[32m+[m[32m            or self.publish_rate_hz <= 0.0[m
+[32m+[m[32m        ):[m
+[32m+[m[32m            raise ValueError([m
+[32m+[m[32m                "publish_rate_hz must be finite and greater than zero"[m
+[32m+[m[32m            )[m
+[32m+[m[32m        self._period = 1.0 / self.publish_rate_hz[m
+[32m+[m[32m        self._trajectory_duration = float([m
+[32m+[m[32m            self.get_parameter("trajectory_duration").value[m
+[32m+[m[32m        )[m
+[32m+[m[32m        self._max_joint_velocity = float([m
+[32m+[m[32m            self.get_parameter("max_joint_velocity").value[m
+[32m+[m[32m        )[m
+[32m+[m[32m        self._joystick_xy_speed = float([m
+[32m+[m[32m            self.get_parameter("joystick_xy_speed").value[m
+[32m+[m[32m        )[m
+[32m+[m[32m        self._joystick_y_axis_sign = float([m
+[32m+[m[32m            self.get_parameter("joystick_y_axis_sign").value[m
+[32m+[m[32m        )[m
+[32m+[m[32m        self._joystick_joint_step_rad = float([m
+[32m+[m[32m            self.get_parameter("joystick_joint_step_rad").value[m
+[32m+[m[32m        )[m
+[32m+[m[32m        self._joystick_trajectory_duration = float([m
+[32m+[m[32m            self.get_parameter("joystick_trajectory_duration").value[m
+[32m+[m[32m        )[m
+[32m+[m[32m        positive_parameters = {[m
+[32m+[m[32m            "trajectory_duration": self._trajectory_duration,[m
+[32m+[m[32m            "max_joint_velocity": self._max_joint_velocity,[m
+[32m+[m[32m            "joystick_xy_speed": self._joystick_xy_speed,[m
+[32m+[m[32m            "joystick_joint_step_rad": self._joystick_joint_step_rad,[m
+[32m+[m[32m            "joystick_trajectory_duration": self._joystick_trajectory_duration,[m
+[32m+[m[32m        }[m
+[32m+[m[32m        for name, value in positive_parameters.items():[m
+[32m+[m[32m            if not math.isfinite(value) or value <= 0.0:[m
+[32m+[m[32m                raise ValueError([m
+[32m+[m[32m                    f"{name} must be finite and greater than zero"[m
+[32m+[m[32m                )[m
+[32m+[m[32m        if self._joystick_y_axis_sign not in (-1.0, 1.0):[m
+[32m+[m[32m            raise ValueError("joystick_y_axis_sign must be either -1 or 1")[m
+[32m+[m
+[32m+[m[32m        self._joint_names = list(self.get_parameter("joint_names").value)[m
+[32m+[m[32m        if ([m
+[32m+[m[32m            len(self._joint_names) != self.arm.n_joints[m
+[32m+[m[32m            or len(set(self._joint_names)) != self.arm.n_joints[m
+[32m+[m[32m            or not all(self._joint_names)[m
+[32m+[m[32m        ):[m
+[32m+[m[32m            raise ValueError([m
+[32m+[m[32m                "joint_names must be distinct and match arm joint count"[m
+[32m+[m[32m            )[m
+[32m+[m
+[32m+[m[32m        backend_mode = str(self.get_parameter("backend_mode").value)[m
+[32m+[m[32m        if backend_mode == "simulated":[m
+[32m+[m[32m            self._backend = SimulatedJointBackend([m
+[32m+[m[32m                self._joint_names, [0.0, 0.0, 0.0][m
+[32m+[m[32m            )[m
+[32m+[m[32m            self._joint_state_publisher = self.create_publisher([m
+[32m+[m[32m                JointState,[m
+[32m+[m[32m                str(self.get_parameter("joint_states_topic").value),[m
+[32m+[m[32m                10,[m
+[32m+[m[32m            )[m
+[32m+[m[32m            self._joint_state_subscription = None[m
+[32m+[m[32m            self._command_publisher = None[m
+[32m+[m[32m        elif backend_mode == "ros2_control":[m
+[32m+[m[32m            self._command_publisher = self.create_publisher([m
+[32m+[m[32m                JointTrajectory,[m
+[32m+[m[32m                str(self.get_parameter("trajectory_command_topic").value),[m
+[32m+[m[32m                10,[m
+[32m+[m[32m            )[m
+[32m+[m[32m            self._backend = JointTrajectoryBackend([m
+[32m+[m[32m                self._joint_names, self._command_publisher[m
+[32m+[m[32m            )[m
+[32m+[m[32m            self._joint_state_publisher = None[m
+[32m+[m[32m            self._joint_state_subscription = self.create_subscription([m
+[32m+[m[32m                JointState,[m
+[32m+[m[32m                str(self.get_parameter("joint_states_topic").value),[m
+[32m+[m[32m                self._on_joint_state,[m
+[32m+[m[32m                10,[m
+[32m+[m[32m            )[m
+[32m+[m[32m        else:[m
+[32m+[m[32m            raise ValueError([m
+[32m+[m[32m                "backend_mode must be either 'simulated' or 'ros2_control'"[m
+[32m+[m[32m            )[m
+[32m+[m
+[32m+[m[32m        self._status_publisher = self.create_publisher([m
+[32m+[m[32m            String, "/controller_status", 10[m
+[32m+[m[32m        )[m
+[32m+[m[32m        self._target_subscription = self.create_subscription([m
+[32m+[m[32m            PointStamped,[m
+[32m+[m[32m            str(self.get_parameter("target_topic").value),[m
+[32m+[m[32m            self._on_xy_target,[m
+[32m+[m[32m            10,[m
+[32m+[m[32m        )[m
+[32m+[m[32m        self._joint_target_subscription = self.create_subscription([m
+[32m+[m[32m            Float64MultiArray,[m
+[32m+[m[32m            str(self.get_parameter("joint_target_topic").value),[m
+[32m+[m[32m            self._on_joint_target,[m
+[32m+[m[32m            10,[m
+[32m+[m[32m        )[m
+[32m+[m[32m        self._joy_subscription = self.create_subscription([m
+[32m+[m[32m            Joy,[m
+[32m+[m[32m            str(self.get_parameter("joy_topic").value),[m
+[32m+[m[32m            self._on_joy,[m
+[32m+[m[32m            10,[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m        self._trajectory = None[m
+[32m+[m[32m        self._trajectory_started_at = 0.0[m
+[32m+[m[32m        self._joy_target_xy = None[m
+[32m+[m[32m        self._joy_last_update = time.monotonic()[m
+[32m+[m[32m        self._previous_joy_buttons: list[int] = [][m
+[32m+[m[32m        self._previous_positions = [0.0] * self.arm.n_joints[m
+[32m+[m[32m        self._waiting_for_feedback_reported = False[m
+[32m+[m[32m        self._timer = self.create_timer(self._period, self._on_timer)[m
+[32m+[m[32m        self._status("Ready")[m
+[32m+[m[32m        self.get_logger().info([m
+[32m+[m[32m            f"Controller ready with {backend_mode} backend at "[m
+[32m+[m[32m            f"{self.publish_rate_hz:g} Hz."[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    def _status(self, message: str) -> None:[m
+[32m+[m[32m        status = String()[m
+[32m+[m[32m        status.data = message[m
+[32m+[m[32m        self._status_publisher.publish(status)[m
+[32m+[m
+[32m+[m[32m    def _current_positions(self) -> list[float] | None:[m
+[32m+[m[32m        try:[m
+[32m+[m[32m            positions = self._backend.current_positions()[m
+[32m+[m[32m        except RuntimeError as error:[m
+[32m+[m[32m            if not self._waiting_for_feedback_reported:[m
+[32m+[m[32m                self.get_logger().info(str(error))[m
+[32m+[m[32m                self._status("Waiting for joint-state feedback")[m
+[32m+[m[32m                self._waiting_for_feedback_reported = True[m
+[32m+[m[32m            return None[m
+[32m+[m[32m        if self._waiting_for_feedback_reported:[m
+[32m+[m[32m            self._status("Ready")[m
+[32m+[m[32m        self._waiting_for_feedback_reported = False[m
+[32m+[m[32m        return positions[m
+[32m+[m
+[32m+[m[32m    def _on_joint_state(self, message: JointState) -> None:[m
+[32m+[m[32m        self._backend.update_feedback(message.name, message.position)[m
+[32m+[m
+[32m+[m[32m    def _on_xy_target([m
+[32m+[m[32m        self, message: PointStamped, from_joystick: bool = False[m
+[32m+[m[32m    ) -> None:[m
+[32m+[m[32m        if not from_joystick:[m
+[32m+[m[32m            self._joy_target_xy = None[m
+[32m+[m[32m        if message.header.frame_id not in ("", "base_link"):[m
+[32m+[m[32m            self._reject([m
+[32m+[m[32m                f"Expected target coordinates in base_link, got "[m
+[32m+[m[32m                f"'{message.header.frame_id}'"[m
+[32m+[m[32m            )[m
+[32m+[m[32m            return[m
+[32m+[m[32m        start = self._current_positions()[m
+[32m+[m[32m        if start is None:[m
+[32m+[m[32m            self._reject("Cannot plan until joint-state feedback is available")[m
+[32m+[m[32m            return[m
+[32m+[m[32m        try:[m
+[32m+[m[32m            goal = solve_xy_target([m
+[32m+[m[32m                self.arm,[m
+[32m+[m[32m                (message.point.x, message.point.z),[m
+[32m+[m[32m                start,[m
+[32m+[m[32m            )[m
+[32m+[m[32m        except (ValueError, FloatingPointError) as error:[m
+[32m+[m[32m            self._reject(f"XY target rejected: {error}")[m
+[32m+[m[32m            return[m
+[32m+[m[32m        self._start_trajectory([m
+[32m+[m[32m            start,[m
+[32m+[m[32m            goal,[m
+[32m+[m[32m            self._joystick_trajectory_duration[m
+[32m+[m[32m            if from_joystick[m
+[32m+[m[32m            else None,[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    def _on_joint_target([m
+[32m+[m[32m        self,[m
+[32m+[m[32m        message: Float64MultiArray,[m
+[32m+[m[32m        from_joystick: bool = False,[m
+[32m+[m[32m    ) -> None:[m
+[32m+[m[32m        self._joy_target_xy = None[m
+[32m+[m[32m        if len(message.data) != self.arm.n_joints:[m
+[32m+[m[32m            self._reject([m
+[32m+[m[32m                "Joint target must contain exactly "[m
+[32m+[m[32m                f"{self.arm.n_joints} positions"[m
+[32m+[m[32m            )[m
+[32m+[m[32m            return[m
+[32m+[m[32m        start = self._current_positions()[m
+[32m+[m[32m        if start is None:[m
+[32m+[m[32m            self._reject("Cannot plan until joint-state feedback is available")[m
+[32m+[m[32m            return[m
+[32m+[m[32m        goal = [float(position) for position in message.data][m
+[32m+[m[32m        if not all(math.isfinite(position) for position in goal):[m
+[32m+[m[32m            self._reject("Joint target positions must all be finite")[m
+[32m+[m[32m            return[m
+[32m+[m[32m        if not self.arm.within_joint_limits(goal):[m
+[32m+[m[32m            self._reject([m
+[32m+[m[32m                "Joint target is outside the configured joint limits"[m
+[32m+[m[32m            )[m
+[32m+[m[32m            return[m
+[32m+[m[32m        if not self.arm.arm_above_base(goal):[m
+[32m+[m[32m            self._reject("Joint target violates the ground constraint")[m
+[32m+[m[32m            return[m
+[32m+[m[32m        self._start_trajectory([m
+[32m+[m[32m            start,[m
+[32m+[m[32m            goal,[m
+[32m+[m[32m            self._joystick_trajectory_duration[m
+[32m+[m[32m            if from_joystick[m
+[32m+[m[32m            else None,[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    def _start_trajectory([m
+[32m+[m[32m        self,[m
+[32m+[m[32m        start: list[float],[m
+[32m+[m[32m        goal: list[float],[m
+[32m+[m[32m        minimum_duration: float | None = None,[m
+[32m+[m[32m    ) -> None:[m
+[32m+[m[32m        if not all(math.isfinite(value) for value in start):[m
+[32m+[m[32m            self._reject("Current joint state contains non-finite positions")[m
+[32m+[m[32m            return[m
+[32m+[m[32m        if ([m
+[32m+[m[32m            not self.arm.within_joint_limits(start)[m
+[32m+[m[32m            or not self.arm.arm_above_base(start)[m
+[32m+[m[32m        ):[m
+[32m+[m[32m            self._reject("Current joint state violates the arm constraints")[m
+[32m+[m[32m            return[m
+[32m+[m[32m        try:[m
+[32m+[m[32m            trajectory = make_trajectory([m
+[32m+[m[32m                start,[m
+[32m+[m[32m                goal,[m
+[32m+[m[32m                ([m
+[32m+[m[32m                    self._trajectory_duration[m
+[32m+[m[32m                    if minimum_duration is None[m
+[32m+[m[32m                    else minimum_duration[m
+[32m+[m[32m                ),[m
+[32m+[m[32m                self._max_joint_velocity,[m
+[32m+[m[32m            )[m
+[32m+[m[32m            if not trajectory_respects_constraints([m
+[32m+[m[32m                self.arm, trajectory, self._period / 4.0[m
+[32m+[m[32m            ):[m
+[32m+[m[32m                self._reject([m
+[32m+[m[32m                    "Planned path violates joint limits or ground constraint"[m
+[32m+[m[32m                )[m
+[32m+[m[32m                return[m
+[32m+[m[32m        except ValueError as error:[m
+[32m+[m[32m            self._reject(f"Trajectory rejected: {error}")[m
+[32m+[m[32m            return[m
+[32m+[m
+[32m+[m[32m        self._trajectory = trajectory[m
+[32m+[m[32m        self._trajectory_started_at = self._clock_seconds()[m
+[32m+[m[32m        self._status(f"Executing trajectory ({trajectory.duration:.2f} s)")[m
+[32m+[m
+[32m+[m[32m    def _clock_seconds(self) -> float:[m
+[32m+[m[32m        return self.get_clock().now().nanoseconds / 1_000_000_000.0[m
+[32m+[m
+[32m+[m[32m    def _on_joy(self, message: Joy) -> None:[m
+[32m+[m[32m        start = self._current_positions()[m
+[32m+[m[32m        if start is None:[m
+[32m+[m[32m            return[m
+[32m+[m
+[32m+[m[32m        buttons = [int(value) for value in message.buttons][m
+[32m+[m[32m        rising = [[m
+[32m+[m[32m            index[m
+[32m+[m[32m            for index, value in enumerate(buttons)[m
+[32m+[m[32m            if value[m
+[32m+[m[32m            and ([m
+[32m+[m[32m                index >= len(self._previous_joy_buttons)[m
+[32m+[m[32m                or not self._previous_joy_buttons[index][m
+[32m+[m[32m            )[m
+[32m+[m[32m        ][m
+[32m+[m[32m        self._previous_joy_buttons = buttons[m
+[32m+[m
+[32m+[m[32m        joint_delta = [0.0] * self.arm.n_joints[m
+[32m+[m[32m        step = self._joystick_joint_step_rad[m
+[32m+[m[32m        for joint_index, (positive_button, negative_button) in enumerate([m
+[32m+[m[32m            ((0, 1), (2, 3), (4, 5))[m
+[32m+[m[32m        ):[m
+[32m+[m[32m            if positive_button in rising:[m
+[32m+[m[32m                joint_delta[joint_index] += step[m
+[32m+[m[32m            if negative_button in rising:[m
+[32m+[m[32m                joint_delta[joint_index] -= step[m
+[32m+[m[32m        if any(joint_delta):[m
+[32m+[m[32m            goal = [[m
+[32m+[m[32m                position + delta[m
+[32m+[m[32m                for position, delta in zip(start, joint_delta)[m
+[32m+[m[32m            ][m
+[32m+[m[32m            self._on_joint_target([m
+[32m+[m[32m                Float64MultiArray(data=goal),[m
+[32m+[m[32m                from_joystick=True,[m
+[32m+[m[32m            )[m
+[32m+[m[32m            return[m
+[32m+[m
+[32m+[m[32m        axes = message.axes[m
+[32m+[m[32m        axis_x = axes[0] if len(axes) > 0 else 0.0[m
+[32m+[m[32m        axis_y = axes[1] if len(axes) > 1 else 0.0[m
+[32m+[m[32m        if not math.isfinite(axis_x) or not math.isfinite(axis_y):[m
+[32m+[m[32m            self._reject("Joystick axes must be finite")[m
+[32m+[m[32m            return[m
+[32m+[m[32m        axis_y *= self._joystick_y_axis_sign[m
+[32m+[m[32m        now = time.monotonic()[m
+[32m+[m[32m        elapsed = min(0.1, max(0.0, now - self._joy_last_update))[m
+[32m+[m[32m        self._joy_last_update = now[m
+[32m+[m[32m        if abs(axis_x) < 0.08 and abs(axis_y) < 0.08:[m
+[32m+[m[32m            if self._trajectory is None:[m
+[32m+[m[32m                self._joy_target_xy = None[m
+[32m+[m[32m            return[m
+[32m+[m
+[32m+[m[32m        if self._joy_target_xy is None:[m
+[32m+[m[32m            self._joy_target_xy = self.arm.end_effector(start)[m
+[32m+[m[32m        speed = self._joystick_xy_speed[m
+[32m+[m[32m        self._joy_target_xy = ([m
+[32m+[m[32m            self._joy_target_xy[0] + float(axis_x) * speed * elapsed,[m
+[32m+[m[32m            self._joy_target_xy[1] + float(axis_y) * speed * elapsed,[m
+[32m+[m[32m        )[m
+[32m+[m[32m        target = PointStamped()[m
+[32m+[m[32m        target.header.frame_id = "base_link"[m
+[32m+[m[32m        target.point.x, target.point.z = self._joy_target_xy[m
+[32m+[m[32m        self._on_xy_target(target, from_joystick=True)[m
+[32m+[m
+[32m+[m[32m    def _reject(self, message: str) -> None:[m
+[32m+[m[32m        self.get_logger().warning(message)[m
+[32m+[m[32m        self._status(f"Rejected: {message}")[m
+[32m+[m
+[32m+[m[32m    def _on_timer(self) -> None:[m
+[32m+[m[32m        positions = self._current_positions()[m
+[32m+[m[32m        if positions is None:[m
+[32m+[m[32m            return[m
+[32m+[m
+[32m+[m[32m        if self._trajectory is not None:[m
+[32m+[m[32m            elapsed = self._clock_seconds() - self._trajectory_started_at[m
+[32m+[m[32m            positions = self._trajectory.sample(elapsed).tolist()[m
+[32m+[m[32m            self._backend.command_positions([m
+[32m+[m[32m                positions, self.get_clock().now().to_msg(), self._period * 2.0[m
+[32m+[m[32m            )[m
+[32m+[m[32m            if elapsed >= self._trajectory.duration:[m
+[32m+[m[32m                self._trajectory = None[m
+[32m+[m[32m                self._status("Trajectory complete")[m
+[32m+[m
+[32m+[m[32m        if self._joint_state_publisher is not None:[m
+[32m+[m[32m            message = JointState()[m
+[32m+[m[32m            message.header.stamp = self.get_clock().now().to_msg()[m
+[32m+[m[32m            message.name = self._joint_names[m
+[32m+[m[32m            message.position = positions[m
+[32m+[m[32m            message.velocity = [[m
+[32m+[m[32m                (current - previous) / self._period[m
+[32m+[m[32m                for current, previous in zip([m
+[32m+[m[32m                    positions, self._previous_positions[m
+[32m+[m[32m                )[m
+[32m+[m[32m            ][m
+[32m+[m[32m            self._joint_state_publisher.publish(message)[m
+[32m+[m[32m        self._previous_positions = list(positions)[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef main(args=None):[m
+[32m+[m[32m    """Initialize ROS and run the controller node."""[m
+[32m+[m[32m    rclpy.init(args=args)[m
+[32m+[m[32m    node = ControllerNode()[m
+[32m+[m[32m    try:[m
+[32m+[m[32m        rclpy.spin(node)[m
+[32m+[m[32m    except KeyboardInterrupt:[m
+[32m+[m[32m        pass[m
+[32m+[m[32m    finally:[m
+[32m+[m[32m        node.destroy_node()[m
+[32m+[m[32m        rclpy.shutdown()[m
+[32m+[m
+[32m+[m
+[32m+[m[32mif __name__ == "__main__":[m
+[32m+[m[32m    main()[m
+[1mdiff --git a/src/planar_arm_control/planar_arm_control/gui_node.py b/src/planar_arm_control/planar_arm_control/gui_node.py[m
+[1mnew file mode 100644[m
+[1mindex 0000000..1256a19[m
+[1m--- /dev/null[m
+[1m+++ b/src/planar_arm_control/planar_arm_control/gui_node.py[m
+[36m@@ -0,0 +1,307 @@[m
+[32m+[m[32m#!/usr/bin/env python3[m
+[32m+[m[32m"""PyQt5 teleoperation and live telemetry window for the planar arm."""[m
+[32m+[m
+[32m+[m[32mfrom collections import deque[m
+[32m+[m[32mimport math[m
+[32m+[m[32mimport threading[m
+[32m+[m[32mimport time[m
+[32m+[m
+[32m+[m[32mimport rclpy[m
+[32m+[m[32mfrom geometry_msgs.msg import PointStamped[m
+[32m+[m[32mfrom rclpy.executors import SingleThreadedExecutor[m
+[32m+[m[32mfrom rclpy.node import Node[m
+[32m+[m[32mfrom sensor_msgs.msg import JointState[m
+[32m+[m[32mfrom std_msgs.msg import Float64MultiArray, String[m
+[32m+[m
+[32m+[m[32mfrom PyQt5 import QtCore, QtGui, QtWidgets[m
+[32m+[m[32mimport pyqtgraph as pg[m
+[32m+[m
+[32m+[m[32mfrom planar_arm_control.planar_arm import PlanarArm[m
+[32m+[m
+[32m+[m[32mLINK_LENGTHS = [3.0, 2.0, 1.5][m
+[32m+[m[32mJOINT_NAMES = ["joint1", "joint2", "joint3"][m
+[32m+[m
+[32m+[m
+[32m+[m[32mclass GuiNode(Node):[m
+[32m+[m[32m    """Receive arm telemetry and publish operator motion goals."""[m
+[32m+[m
+[32m+[m[32m    def __init__(self):[m
+[32m+[m[32m        """Create target publishers and thread-safe telemetry subscriptions."""[m
+[32m+[m[32m        super().__init__("gui_node")[m
+[32m+[m[32m        self.arm = PlanarArm(LINK_LENGTHS)[m
+[32m+[m[32m        self._state_lock = threading.Lock()[m
+[32m+[m[32m        self._positions = [0.0, 0.0, 0.0][m
+[32m+[m[32m        self._status = "Waiting for controller"[m
+[32m+[m[32m        self._joint_target_publisher = self.create_publisher([m
+[32m+[m[32m            Float64MultiArray, "/joint_target", 10[m
+[32m+[m[32m        )[m
+[32m+[m[32m        self._xy_target_publisher = self.create_publisher([m
+[32m+[m[32m            PointStamped, "/target_pose", 10[m
+[32m+[m[32m        )[m
+[32m+[m[32m        self.create_subscription([m
+[32m+[m[32m            JointState, "/joint_states", self._on_joint_state, 10[m
+[32m+[m[32m        )[m
+[32m+[m[32m        self.create_subscription([m
+[32m+[m[32m            String, "/controller_status", self._on_status, 10[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    def _on_joint_state(self, message: JointState) -> None:[m
+[32m+[m[32m        by_name = dict(zip(message.name, message.position))[m
+[32m+[m[32m        if not all(name in by_name for name in JOINT_NAMES):[m
+[32m+[m[32m            return[m
+[32m+[m[32m        positions = [float(by_name[name]) for name in JOINT_NAMES][m
+[32m+[m[32m        if not all(math.isfinite(value) for value in positions):[m
+[32m+[m[32m            return[m
+[32m+[m[32m        with self._state_lock:[m
+[32m+[m[32m            self._positions = positions[m
+[32m+[m
+[32m+[m[32m    def _on_status(self, message: String) -> None:[m
+[32m+[m[32m        with self._state_lock:[m
+[32m+[m[32m            self._status = message.data[m
+[32m+[m
+[32m+[m[32m    def snapshot(self):[m
+[32m+[m[32m        """Return the latest positions and controller status consistently."""[m
+[32m+[m[32m        with self._state_lock:[m
+[32m+[m[32m            return list(self._positions), self._status[m
+[32m+[m
+[32m+[m[32m    def publish_xy_target(self, x: float, y: float) -> None:[m
+[32m+[m[32m        """Publish a planar target, mapping planner Y to robot-frame Z."""[m
+[32m+[m[32m        message = PointStamped()[m
+[32m+[m[32m        message.header.stamp = self.get_clock().now().to_msg()[m
+[32m+[m[32m        message.header.frame_id = "base_link"[m
+[32m+[m[32m        message.point.x = float(x)[m
+[32m+[m[32m        message.point.z = float(y)[m
+[32m+[m[32m        self._xy_target_publisher.publish(message)[m
+[32m+[m
+[32m+[m[32m    def publish_joint_target(self, positions: list[float]) -> None:[m
+[32m+[m[32m        """Publish a three-joint target in radians."""[m
+[32m+[m[32m        self._joint_target_publisher.publish([m
+[32m+[m[32m            Float64MultiArray(data=[float(value) for value in positions])[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m
+[32m+[m[32mclass ArmWindow(QtWidgets.QMainWindow):[m
+[32m+[m[32m    """Display arm telemetry and provide keyboard, XY, and joint controls."""[m
+[32m+[m
+[32m+[m[32m    def __init__(self, node: GuiNode):[m
+[32m+[m[32m        """Build the plots and operator controls around a ROS node."""[m
+[32m+[m[32m        super().__init__()[m
+[32m+[m[32m        self.node = node[m
+[32m+[m[32m        self.arm = node.arm[m
+[32m+[m[32m        self.setWindowTitle("Planar Arm Teleoperation")[m
+[32m+[m[32m        self.resize(1000, 720)[m
+[32m+[m
+[32m+[m[32m        central = QtWidgets.QWidget()[m
+[32m+[m[32m        self.setCentralWidget(central)[m
+[32m+[m[32m        layout = QtWidgets.QGridLayout(central)[m
+[32m+[m
+[32m+[m[32m        self.arm_plot = pg.PlotWidget(title="Live arm pose")[m
+[32m+[m[32m        self.arm_plot.setAspectLocked(True)[m
+[32m+[m[32m        self.arm_plot.showGrid(x=True, y=True, alpha=0.25)[m
+[32m+[m[32m        self.arm_plot.setLabel("bottom", "X")[m
+[32m+[m[32m        self.arm_plot.setLabel("left", "Y")[m
+[32m+[m[32m        reach = sum(LINK_LENGTHS) + 0.5[m
+[32m+[m[32m        self.arm_plot.setXRange(-reach, reach)[m
+[32m+[m[32m        self.arm_plot.setYRange(-0.5, reach)[m
+[32m+[m[32m        self.arm_curve = self.arm_plot.plot([m
+[32m+[m[32m            [], [], pen=pg.mkPen("#4da6ff", width=5), symbol="o", symbolSize=9[m
+[32m+[m[32m        )[m
+[32m+[m[32m        layout.addWidget(self.arm_plot, 0, 0, 5, 1)[m
+[32m+[m
+[32m+[m[32m        target_group = QtWidgets.QGroupBox("Planar target (base_link X/Z)")[m
+[32m+[m[32m        target_layout = QtWidgets.QFormLayout(target_group)[m
+[32m+[m[32m        self.x_target = self._coordinate_box()[m
+[32m+[m[32m        self.y_target = self._coordinate_box()[m
+[32m+[m[32m        target_layout.addRow("X:", self.x_target)[m
+[32m+[m[32m        target_layout.addRow("Y:", self.y_target)[m
+[32m+[m[32m        move_xy = QtWidgets.QPushButton("Move to XY")[m
+[32m+[m[32m        move_xy.clicked.connect(self._send_xy_target)[m
+[32m+[m[32m        target_layout.addRow(move_xy)[m
+[32m+[m[32m        layout.addWidget(target_group, 0, 1)[m
+[32m+[m
+[32m+[m[32m        joint_group = QtWidgets.QGroupBox("Joint target (degrees)")[m
+[32m+[m[32m        joint_layout = QtWidgets.QFormLayout(joint_group)[m
+[32m+[m[32m        self.joint_targets = [][m
+[32m+[m[32m        for index, (lower, upper) in enumerate(self.arm.joint_limits):[m
+[32m+[m[32m            box = QtWidgets.QDoubleSpinBox()[m
+[32m+[m[32m            box.setRange([m
+[32m+[m[32m                math.degrees(float(lower)),[m
+[32m+[m[32m                math.degrees(float(upper)),[m
+[32m+[m[32m            )[m
+[32m+[m[32m            box.setDecimals(1)[m
+[32m+[m[32m            box.setSingleStep(1.0)[m
+[32m+[m[32m            self.joint_targets.append(box)[m
+[32m+[m[32m            joint_layout.addRow(f"Joint {index + 1}:", box)[m
+[32m+[m[32m        joint_buttons = QtWidgets.QHBoxLayout()[m
+[32m+[m[32m        move_joints = QtWidgets.QPushButton("Move joints")[m
+[32m+[m[32m        move_joints.clicked.connect(self._send_joint_target)[m
+[32m+[m[32m        set_current = QtWidgets.QPushButton("Use current")[m
+[32m+[m[32m        set_current.clicked.connect(self._set_joint_targets_to_current)[m
+[32m+[m[32m        joint_buttons.addWidget(move_joints)[m
+[32m+[m[32m        joint_buttons.addWidget(set_current)[m
+[32m+[m[32m        joint_layout.addRow(joint_buttons)[m
+[32m+[m[32m        layout.addWidget(joint_group, 1, 1)[m
+[32m+[m
+[32m+[m[32m        self.status_label = QtWidgets.QLabel("Waiting for controller")[m
+[32m+[m[32m        self.status_label.setWordWrap(True)[m
+[32m+[m[32m        layout.addWidget(self.status_label, 2, 1)[m
+[32m+[m[32m        self.pose_label = QtWidgets.QLabel("Joint state unavailable")[m
+[32m+[m[32m        self.pose_label.setWordWrap(True)[m
+[32m+[m[32m        layout.addWidget(self.pose_label, 3, 1)[m
+[32m+[m
+[32m+[m[32m        help_label = QtWidgets.QLabel([m
+[32m+[m[32m            "Keyboard: W/A/S/D or arrow keys jog XY; 1/2, 3/4, 5/6 jog "[m
+[32m+[m[32m            "joints 1/2/3 down/up. Gamepad: left stick jogs XY; buttons "[m
+[32m+[m[32m            "0/1, 2/3, 4/5 jog each joint down/up."[m
+[32m+[m[32m        )[m
+[32m+[m[32m        help_label.setWordWrap(True)[m
+[32m+[m[32m        layout.addWidget(help_label, 4, 1)[m
+[32m+[m
+[32m+[m[32m        self.plot = pg.PlotWidget(title="Joint telemetry")[m
+[32m+[m[32m        self.plot.showGrid(x=True, y=True, alpha=0.25)[m
+[32m+[m[32m        self.plot.setLabel("bottom", "Time", units="s")[m
+[32m+[m[32m        self.plot.setLabel("left", "Joint angle", units="deg")[m
+[32m+[m[32m        self.plot.addLegend()[m
+[32m+[m[32m        self.joint_curves = [[m
+[32m+[m[32m            self.plot.plot([m
+[32m+[m[32m                [],[m
+[32m+[m[32m                [],[m
+[32m+[m[32m                pen=pg.intColor(index, hues=3),[m
+[32m+[m[32m                name=f"Joint {index + 1}",[m
+[32m+[m[32m            )[m
+[32m+[m[32m            for index in range(3)[m
+[32m+[m[32m        ][m
+[32m+[m[32m        layout.addWidget(self.plot, 5, 0, 1, 2)[m
+[32m+[m
+[32m+[m[32m        self._history_times = deque(maxlen=400)[m
+[32m+[m[32m        self._history_positions = [deque(maxlen=400) for _ in range(3)][m
+[32m+[m[32m        self._started_at = time.monotonic()[m
+[32m+[m[32m        self._last_plot_update = 0.0[m
+[32m+[m[32m        self._timer = QtCore.QTimer(self)[m
+[32m+[m[32m        self._timer.timeout.connect(self._refresh)[m
+[32m+[m[32m        self._timer.start(50)[m
+[32m+[m
+[32m+[m[32m    @staticmethod[m
+[32m+[m[32m    def _coordinate_box():[m
+[32m+[m[32m        box = QtWidgets.QDoubleSpinBox()[m
+[32m+[m[32m        box.setRange(-6.5, 6.5)[m
+[32m+[m[32m        box.setDecimals(3)[m
+[32m+[m[32m        box.setSingleStep(0.1)[m
+[32m+[m[32m        return box[m
+[32m+[m
+[32m+[m[32m    def _send_xy_target(self):[m
+[32m+[m[32m        self.node.publish_xy_target([m
+[32m+[m[32m            self.x_target.value(),[m
+[32m+[m[32m            self.y_target.value(),[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    def _send_joint_target(self):[m
+[32m+[m[32m        self.node.publish_joint_target([m
+[32m+[m[32m            [math.radians(box.value()) for box in self.joint_targets][m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    def _set_joint_targets_to_current(self):[m
+[32m+[m[32m        positions, _ = self.node.snapshot()[m
+[32m+[m[32m        for box, position in zip(self.joint_targets, positions):[m
+[32m+[m[32m            box.setValue(math.degrees(position))[m
+[32m+[m
+[32m+[m[32m    def _send_xy_increment(self, dx: float, dy: float):[m
+[32m+[m[32m        positions, _ = self.node.snapshot()[m
+[32m+[m[32m        x, y = self.arm.end_effector(positions)[m
+[32m+[m[32m        self.node.publish_xy_target(x + dx, y + dy)[m
+[32m+[m
+[32m+[m[32m    def _send_joint_increment(self, joint_index: int, delta: float):[m
+[32m+[m[32m        positions, _ = self.node.snapshot()[m
+[32m+[m[32m        positions[joint_index] += delta[m
+[32m+[m[32m        self.node.publish_joint_target(positions)[m
+[32m+[m
+[32m+[m[32m    def keyPressEvent(self, event: QtGui.QKeyEvent):[m
+[32m+[m[32m        """Map keyboard jog keys to XY or individual-joint target updates."""[m
+[32m+[m[32m        if isinstance([m
+[32m+[m[32m            self.focusWidget(),[m
+[32m+[m[32m            (QtWidgets.QLineEdit, QtWidgets.QAbstractSpinBox),[m
+[32m+[m[32m        ):[m
+[32m+[m[32m            super().keyPressEvent(event)[m
+[32m+[m[32m            return[m
+[32m+[m
+[32m+[m[32m        key = event.key()[m
+[32m+[m[32m        xy_keys = {[m
+[32m+[m[32m            QtCore.Qt.Key_A: (-0.1, 0.0),[m
+[32m+[m[32m            QtCore.Qt.Key_Left: (-0.1, 0.0),[m
+[32m+[m[32m            QtCore.Qt.Key_D: (0.1, 0.0),[m
+[32m+[m[32m            QtCore.Qt.Key_Right: (0.1, 0.0),[m
+[32m+[m[32m            QtCore.Qt.Key_S: (0.0, -0.1),[m
+[32m+[m[32m            QtCore.Qt.Key_Down: (0.0, -0.1),[m
+[32m+[m[32m            QtCore.Qt.Key_W: (0.0, 0.1),[m
+[32m+[m[32m            QtCore.Qt.Key_Up: (0.0, 0.1),[m
+[32m+[m[32m        }[m
+[32m+[m[32m        joint_keys = {[m
+[32m+[m[32m            QtCore.Qt.Key_1: (0, -0.05),[m
+[32m+[m[32m            QtCore.Qt.Key_2: (0, 0.05),[m
+[32m+[m[32m            QtCore.Qt.Key_3: (1, -0.05),[m
+[32m+[m[32m            QtCore.Qt.Key_4: (1, 0.05),[m
+[32m+[m[32m            QtCore.Qt.Key_5: (2, -0.05),[m
+[32m+[m[32m            QtCore.Qt.Key_6: (2, 0.05),[m
+[32m+[m[32m        }[m
+[32m+[m[32m        if key in xy_keys:[m
+[32m+[m[32m            self._send_xy_increment(*xy_keys[key])[m
+[32m+[m[32m            event.accept()[m
+[32m+[m[32m        elif key in joint_keys:[m
+[32m+[m[32m            self._send_joint_increment(*joint_keys[key])[m
+[32m+[m[32m            event.accept()[m
+[32m+[m[32m        else:[m
+[32m+[m[32m            super().keyPressEvent(event)[m
+[32m+[m
+[32m+[m[32m    def _refresh(self):[m
+[32m+[m[32m        positions, status = self.node.snapshot()[m
+[32m+[m[32m        points = self.arm.forward_kinematics(positions)[m
+[32m+[m[32m        self.arm_curve.setData([m
+[32m+[m[32m            [point[0] for point in points],[m
+[32m+[m[32m            [point[1] for point in points],[m
+[32m+[m[32m        )[m
+[32m+[m[32m        end_x, end_y = points[-1][m
+[32m+[m[32m        self.status_label.setText(f"Controller: {status}")[m
+[32m+[m[32m        self.pose_label.setText([m
+[32m+[m[32m            f"End effector: X={end_x:.3f}, Y={end_y:.3f}\n"[m
+[32m+[m[32m            + "Joint angles: "[m
+[32m+[m[32m            + ", ".join(f"{math.degrees(value):.1f}°" for value in positions)[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m        now = time.monotonic()[m
+[32m+[m[32m        if now - self._last_plot_update >= 0.1:[m
+[32m+[m[32m            elapsed = now - self._started_at[m
+[32m+[m[32m            self._history_times.append(elapsed)[m
+[32m+[m[32m            for history, position in zip(self._history_positions, positions):[m
+[32m+[m[32m                history.append(math.degrees(position))[m
+[32m+[m[32m            times = list(self._history_times)[m
+[32m+[m[32m            for curve, history in zip([m
+[32m+[m[32m                self.joint_curves, self._history_positions[m
+[32m+[m[32m            ):[m
+[32m+[m[32m                curve.setData(times, list(history))[m
+[32m+[m[32m            self._last_plot_update = now[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef main(args=None):[m
+[32m+[m[32m    """Run Qt in the main thread and ROS callbacks in a background executor."""[m
+[32m+[m[32m    rclpy.init(args=args)[m
+[32m+[m[32m    node = GuiNode()[m
+[32m+[m[32m    executor = SingleThreadedExecutor()[m
+[32m+[m[32m    executor.add_node(node)[m
+[32m+[m[32m    ros_thread = threading.Thread(target=executor.spin, daemon=True)[m
+[32m+[m[32m    application = QtWidgets.QApplication([])[m
+[32m+[m[32m    window = ArmWindow(node)[m
+[32m+[m[32m    ros_thread.start()[m
+[32m+[m[32m    window.show()[m
+[32m+[m
+[32m+[m[32m    try:[m
+[32m+[m[32m        exit_code = application.exec_()[m
+[32m+[m[32m    finally:[m
+[32m+[m[32m        executor.shutdown()[m
+[32m+[m[32m        ros_thread.join(timeout=2.0)[m
+[32m+[m[32m        node.destroy_node()[m
+[32m+[m[32m        rclpy.shutdown()[m
+[32m+[m[32m    raise SystemExit(exit_code)[m
+[32m+[m
+[32m+[m
+[32m+[m[32mif __name__ == "__main__":[m
+[32m+[m[32m    main()[m
+[1mdiff --git a/src/planar_arm_control/planar_arm_control/motion.py b/src/planar_arm_control/planar_arm_control/motion.py[m
+[1mnew file mode 100644[m
+[1mindex 0000000..47b9b46[m
+[1m--- /dev/null[m
+[1m+++ b/src/planar_arm_control/planar_arm_control/motion.py[m
+[36m@@ -0,0 +1,117 @@[m
+[32m+[m[32m"""Kinematic target validation and time-parameterized joint trajectories."""[m
+[32m+[m
+[32m+[m[32mfrom dataclasses import dataclass[m
+[32m+[m[32mimport math[m
+[32m+[m
+[32m+[m[32mimport numpy as np[m
+[32m+[m
+[32m+[m
+[32m+[m[32m@dataclass(frozen=True)[m
+[32m+[m[32mclass QuinticTrajectory:[m
+[32m+[m[32m    """Quintic motion with zero velocity and acceleration at both endpoints."""[m
+[32m+[m
+[32m+[m[32m    start: tuple[float, ...][m
+[32m+[m[32m    goal: tuple[float, ...][m
+[32m+[m[32m    duration: float[m
+[32m+[m
+[32m+[m[32m    def sample(self, elapsed: float) -> np.ndarray:[m
+[32m+[m[32m        """Return joint positions at elapsed seconds, clamped to the path."""[m
+[32m+[m[32m        progress = min(1.0, max(0.0, elapsed / self.duration))[m
+[32m+[m[32m        blend = 10.0 * progress**3 - 15.0 * progress**4 + 6.0 * progress**5[m
+[32m+[m[32m        start = np.asarray(self.start, dtype=float)[m
+[32m+[m[32m        goal = np.asarray(self.goal, dtype=float)[m
+[32m+[m[32m        return start + blend * (goal - start)[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef make_trajectory([m
+[32m+[m[32m    start: list[float] | np.ndarray,[m
+[32m+[m[32m    goal: list[float] | np.ndarray,[m
+[32m+[m[32m    minimum_duration: float,[m
+[32m+[m[32m    max_joint_velocity: float,[m
+[32m+[m[32m) -> QuinticTrajectory:[m
+[32m+[m[32m    """Create a quintic path long enough to respect the velocity limit."""[m
+[32m+[m[32m    if not math.isfinite(minimum_duration) or minimum_duration <= 0.0:[m
+[32m+[m[32m        raise ValueError([m
+[32m+[m[32m            "trajectory_duration must be finite and greater than zero"[m
+[32m+[m[32m        )[m
+[32m+[m[32m    if not math.isfinite(max_joint_velocity) or max_joint_velocity <= 0.0:[m
+[32m+[m[32m        raise ValueError([m
+[32m+[m[32m            "max_joint_velocity must be finite and greater than zero"[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    start_array = np.asarray(start, dtype=float)[m
+[32m+[m[32m    goal_array = np.asarray(goal, dtype=float)[m
+[32m+[m[32m    if ([m
+[32m+[m[32m        start_array.ndim != 1[m
+[32m+[m[32m        or start_array.shape != goal_array.shape[m
+[32m+[m[32m        or not np.all(np.isfinite(start_array))[m
+[32m+[m[32m        or not np.all(np.isfinite(goal_array))[m
+[32m+[m[32m    ):[m
+[32m+[m[32m        raise ValueError([m
+[32m+[m[32m            "joint positions must be finite vectors of equal length"[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    peak_velocity_factor = 1.875[m
+[32m+[m[32m    required_duration = ([m
+[32m+[m[32m        peak_velocity_factor * float(np.max(np.abs(goal_array - start_array)))[m
+[32m+[m[32m        / max_joint_velocity[m
+[32m+[m[32m    )[m
+[32m+[m[32m    duration = max(minimum_duration, required_duration)[m
+[32m+[m[32m    return QuinticTrajectory([m
+[32m+[m[32m        tuple(float(value) for value in start_array),[m
+[32m+[m[32m        tuple(float(value) for value in goal_array),[m
+[32m+[m[32m        duration,[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef trajectory_respects_constraints([m
+[32m+[m[32m    arm,[m
+[32m+[m[32m    trajectory: QuinticTrajectory,[m
+[32m+[m[32m    sample_period: float,[m
+[32m+[m[32m) -> bool:[m
+[32m+[m[32m    """Check sampled trajectory points against arm constraints."""[m
+[32m+[m[32m    if not math.isfinite(sample_period) or sample_period <= 0.0:[m
+[32m+[m[32m        raise ValueError([m
+[32m+[m[32m            "validation sample period must be finite and positive"[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    steps = max(1, math.ceil(trajectory.duration / sample_period))[m
+[32m+[m[32m    for step in range(steps + 1):[m
+[32m+[m[32m        joint_positions = trajectory.sample(trajectory.duration * step / steps)[m
+[32m+[m[32m        if not arm.within_joint_limits(joint_positions):[m
+[32m+[m[32m            return False[m
+[32m+[m[32m        if not arm.arm_above_base(joint_positions):[m
+[32m+[m[32m            return False[m
+[32m+[m[32m    return True[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef solve_xy_target([m
+[32m+[m[32m    arm,[m
+[32m+[m[32m    target_xy: tuple[float, float],[m
+[32m+[m[32m    initial_guess,[m
+[32m+[m[32m) -> list[float]:[m
+[32m+[m[32m    """Solve an XY goal and reject unreachable or invalid joint solutions."""[m
+[32m+[m[32m    target = np.asarray(target_xy, dtype=float)[m
+[32m+[m[32m    if target.shape != (2,) or not np.all(np.isfinite(target)):[m
+[32m+[m[32m        raise ValueError("target must contain finite x and y coordinates")[m
+[32m+[m[32m    if float(np.linalg.norm(target)) > sum(arm.link_lengths):[m
+[32m+[m[32m        raise ValueError("target is outside the arm's reachable radius")[m
+[32m+[m
+[32m+[m[32m    solution = np.asarray([m
+[32m+[m[32m        arm.inverse_kinematics(target, initial_guess=initial_guess),[m
+[32m+[m[32m        dtype=float,[m
+[32m+[m[32m    )[m
+[32m+[m[32m    if solution.shape != (arm.n_joints,) or not np.all(np.isfinite(solution)):[m
+[32m+[m[32m        raise ValueError([m
+[32m+[m[32m            "inverse kinematics did not return a finite joint solution"[m
+[32m+[m[32m        )[m
+[32m+[m[32m    if not arm.within_joint_limits(solution):[m
+[32m+[m[32m        raise ValueError([m
+[32m+[m[32m            "inverse kinematics returned a solution outside joint limits"[m
+[32m+[m[32m        )[m
+[32m+[m[32m    if not arm.arm_above_base(solution):[m
+[32m+[m[32m        raise ValueError([m
+[32m+[m[32m            "inverse kinematics returned a solution below the "[m
+[32m+[m[32m            "ground constraint"[m
+[32m+[m[32m        )[m
+[32m+[m[32m    return [float(value) for value in solution][m
+[1mdiff --git a/src/planar_arm_control/planar_arm_control/planar_arm.py b/src/planar_arm_control/planar_arm_control/planar_arm.py[m
+[1mnew file mode 100644[m
+[1mindex 0000000..47fb744[m
+[1m--- /dev/null[m
+[1m+++ b/src/planar_arm_control/planar_arm_control/planar_arm.py[m
+[36m@@ -0,0 +1,272 @@[m
+[32m+[m[32m"""[m
+[32m+[m[32mplanar_arm.py  —  PROVIDED KINEMATICS.  DO NOT MODIFY.[m
+[32m+[m
+[32m+[m[32m3-DoF planar (2D) revolute arm used for the Kineshia Robotics take-home task.[m
+[32m+[m[32mYou are given a complete, working kinematics library so you can focus on the[m
+[32m+[m[32mROS 2 architecture, control, and GUI — not on re-deriving trigonometry.[m
+[32m+[m
+[32m+[m[32mPublic API you will use:[m
+[32m+[m[32m    arm = PlanarArm(link_lengths=[3.0, 2.0, 1.5])[m
+[32m+[m[32m    arm.n_joints                      -> 3[m
+[32m+[m[32m    arm.joint_limits                  -> np.ndarray shape (3, 2), radians[m
+[32m+[m[32m    arm.forward_kinematics(q)         -> list[(x, y)] for base..end-effector[m
+[32m+[m[32m    arm.end_effector(q)               -> (x, y) of the tool tip[m
+[32m+[m[32m    arm.inverse_kinematics(target_xy, initial_guess=q) -> list[q1, q2, q3][m
+[32m+[m[32m    arm.within_joint_limits(q)        -> bool[m
+[32m+[m[32m    arm.arm_above_base(q)             -> bool  (no link below y = 0)[m
+[32m+[m
+[32m+[m[32mAngles are RELATIVE joint angles in radians. q1 is measured from +x.[m
+[32m+[m[32m"""[m
+[32m+[m
+[32m+[m[32mimport numpy as np[m
+[32m+[m
+[32m+[m
+[32m+[m[32mclass PlanarArm:[m
+[32m+[m
+[32m+[m[32m    def __init__(self, link_lengths):[m
+[32m+[m[32m        self.link_lengths = list(link_lengths)[m
+[32m+[m[32m        self.n_joints = len(self.link_lengths)[m
+[32m+[m
+[32m+[m[32m        # Per-joint (lower, upper) limits in radians.[m
+[32m+[m[32m        self.joint_limits = np.radians([[m
+[32m+[m[32m            [0, 180],[m
+[32m+[m[32m            [-120, 120],[m
+[32m+[m[32m            [-120, 120],[m
+[32m+[m[32m        ])[m
+[32m+[m
+[32m+[m[32m        # Ground constraint: no part of the arm may go below y = 0.[m
+[32m+[m[32m        self.min_y = 0.0[m
+[32m+[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+[32m+[m[32m    # Constraints[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+[32m+[m[32m    def within_joint_limits(self, q):[m
+[32m+[m[32m        q = np.asarray(q, dtype=float)[m
+[32m+[m[32m        for i in range(self.n_joints):[m
+[32m+[m[32m            lower = self.joint_limits[i][0][m
+[32m+[m[32m            upper = self.joint_limits[i][1][m
+[32m+[m[32m            if q[i] < lower or q[i] > upper:[m
+[32m+[m[32m                return False[m
+[32m+[m[32m        return True[m
+[32m+[m
+[32m+[m[32m    def arm_above_base(self, q, tolerance=1e-6):[m
+[32m+[m[32m        for x, y in self.forward_kinematics(q):[m
+[32m+[m[32m            if y < self.min_y - tolerance:[m
+[32m+[m[32m                return False[m
+[32m+[m[32m        return True[m
+[32m+[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+[32m+[m[32m    # Forward kinematics[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+[32m+[m[32m    def forward_kinematics(self, joint_angles):[m
+[32m+[m[32m        if len(joint_angles) != self.n_joints:[m
+[32m+[m[32m            raise ValueError([m
+[32m+[m[32m                f"Expected {self.n_joints} joint angles, got {len(joint_angles)}"[m
+[32m+[m[32m            )[m
+[32m+[m
+[32m+[m[32m        x = 0.0[m
+[32m+[m[32m        y = 0.0[m
+[32m+[m[32m        theta = 0.0[m
+[32m+[m[32m        points = [(x, y)][m
+[32m+[m
+[32m+[m[32m        for length, angle in zip(self.link_lengths, joint_angles):[m
+[32m+[m[32m            theta += angle[m
+[32m+[m[32m            x += length * np.cos(theta)[m
+[32m+[m[32m            y += length * np.sin(theta)[m
+[32m+[m[32m            points.append((x, y))[m
+[32m+[m
+[32m+[m[32m        return points[m
+[32m+[m
+[32m+[m[32m    def end_effector(self, joint_angles):[m
+[32m+[m[32m        return self.forward_kinematics(joint_angles)[-1][m
+[32m+[m
+[32m+[m[32m    @staticmethod[m
+[32m+[m[32m    def wrap_angle(angle):[m
+[32m+[m[32m        return (angle + np.pi) % (2 * np.pi) - np.pi[m
+[32m+[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+[32m+[m[32m    # Numerical Jacobian[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+[32m+[m[32m    def numerical_jacobian(self, joint_angles, delta=1e-6):[m
+[32m+[m[32m        q = np.asarray(joint_angles, dtype=float)[m
+[32m+[m[32m        if len(q) != self.n_joints:[m
+[32m+[m[32m            raise ValueError([m
+[32m+[m[32m                f"Expected {self.n_joints} joint angles, got {len(q)}"[m
+[32m+[m[32m            )[m
+[32m+[m
+[32m+[m[32m        current_position = np.asarray(self.end_effector(q), dtype=float)[m
+[32m+[m[32m        J = np.zeros((2, self.n_joints))[m
+[32m+[m
+[32m+[m[32m        for i in range(self.n_joints):[m
+[32m+[m[32m            q_test = q.copy()[m
+[32m+[m[32m            q_test[i] += delta[m
+[32m+[m[32m            new_position = np.asarray(self.end_effector(q_test), dtype=float)[m
+[32m+[m[32m            J[:, i] = (new_position - current_position) / delta[m
+[32m+[m
+[32m+[m[32m        return J[m
+[32m+[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+[32m+[m[32m    # Reachable target (projects onto workspace boundary if too far)[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+[32m+[m[32m    def reachable_target(self, target_xy):[m
+[32m+[m[32m        target = np.asarray(target_xy, dtype=float)[m
+[32m+[m[32m        max_reach = sum(self.link_lengths)[m
+[32m+[m[32m        distance = np.linalg.norm(target)[m
+[32m+[m
+[32m+[m[32m        if distance <= max_reach:[m
+[32m+[m[32m            return target[m
+[32m+[m[32m        if distance == 0:[m
+[32m+[m[32m            return target[m
+[32m+[m
+[32m+[m[32m        reachable = target * max_reach / distance[m
+[32m+[m[32m        print(f"Target {tuple(target_xy)} is outside workspace.")[m
+[32m+[m[32m        print([m
+[32m+[m[32m            f"Using closest reachable target: "[m
+[32m+[m[32m            f"({reachable[0]:.3f}, {reachable[1]:.3f})"[m
+[32m+[m[32m        )[m
+[32m+[m[32m        return reachable[m
+[32m+[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+[32m+[m[32m    # Multiple-solution analytical IK (with Jacobian fallback)[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+[32m+[m[32m    def inverse_kinematics(self, target_xy, initial_guess=None,[m
+[32m+[m[32m                           q3_samples=361, tolerance=1e-5):[m
+[32m+[m
+[32m+[m[32m        target = self.reachable_target(target_xy)[m
+[32m+[m
+[32m+[m[32m        if self.n_joints != 3:[m
+[32m+[m[32m            raise ValueError([m
+[32m+[m[32m                "This multiple-solution IK implementation expects exactly 3 joints."[m
+[32m+[m[32m            )[m
+[32m+[m
+[32m+[m[32m        L1, L2, L3 = self.link_lengths[m
+[32m+[m
+[32m+[m[32m        if initial_guess is None:[m
+[32m+[m[32m            current_q = np.zeros(3)[m
+[32m+[m[32m        else:[m
+[32m+[m[32m            current_q = np.asarray(initial_guess, dtype=float).copy()[m
+[32m+[m[32m            if len(current_q) != 3:[m
+[32m+[m[32m                raise ValueError("initial_guess must contain 3 angles")[m
+[32m+[m
+[32m+[m[32m        target_distance = np.linalg.norm(target)[m
+[32m+[m[32m        if target_distance < tolerance:[m
+[32m+[m[32m            return current_q.tolist()[m
+[32m+[m
+[32m+[m[32m        target_angle = np.arctan2(target[1], target[0])[m
+[32m+[m[32m        solutions = [][m
+[32m+[m[32m        q3_values = np.linspace(-np.pi, np.pi, q3_samples)[m
+[32m+[m
+[32m+[m[32m        for q3 in q3_values:[m
+[32m+[m[32m            A = L2 + L3 * np.cos(q3)[m
+[32m+[m[32m            B = L3 * np.sin(q3)[m
+[32m+[m[32m            R = np.sqrt(A ** 2 + B ** 2)[m
+[32m+[m[32m            beta = np.arctan2(B, A)[m
+[32m+[m
+[32m+[m[32m            cosine_value = ([m
+[32m+[m[32m                target_distance ** 2 - L1 ** 2 - R ** 2[m
+[32m+[m[32m            ) / (2 * L1 * R)[m
+[32m+[m
+[32m+[m[32m            if cosine_value < -1.0:[m
+[32m+[m[32m                if cosine_value < -1.000001:[m
+[32m+[m[32m                    continue[m
+[32m+[m[32m                cosine_value = -1.0[m
+[32m+[m[32m            if cosine_value > 1.0:[m
+[32m+[m[32m                if cosine_value > 1.000001:[m
+[32m+[m[32m                    continue[m
+[32m+[m[32m                cosine_value = 1.0[m
+[32m+[m
+[32m+[m[32m            delta = np.arccos(cosine_value)[m
+[32m+[m
+[32m+[m[32m            for elbow_sign in [1, -1]:[m
+[32m+[m[32m                delta_signed = elbow_sign * delta[m
+[32m+[m[32m                correction = np.arctan2([m
+[32m+[m[32m                    R * np.sin(delta_signed),[m
+[32m+[m[32m                    L1 + R * np.cos(delta_signed),[m
+[32m+[m[32m                )[m
+[32m+[m[32m                q1 = target_angle - correction[m
+[32m+[m[32m                theta2 = q1 + delta_signed[m
+[32m+[m[32m                q2 = theta2 - q1[m
+[32m+[m[32m                q3_candidate = q3[m
+[32m+[m
+[32m+[m[32m                candidate = np.array([[m
+[32m+[m[32m                    self.wrap_angle(q1),[m
+[32m+[m[32m                    self.wrap_angle(q2),[m
+[32m+[m[32m                    self.wrap_angle(q3_candidate),[m
+[32m+[m[32m                ])[m
+[32m+[m
+[32m+[m[32m                if not self.within_joint_limits(candidate):[m
+[32m+[m[32m                    continue[m
+[32m+[m[32m                if not self.arm_above_base(candidate):[m
+[32m+[m[32m                    continue[m
+[32m+[m
+[32m+[m[32m                actual_position = np.asarray(self.end_effector(candidate))[m
+[32m+[m[32m                position_error = np.linalg.norm(target - actual_position)[m
+[32m+[m[32m                if position_error > tolerance:[m
+[32m+[m[32m                    continue[m
+[32m+[m
+[32m+[m[32m                angle_difference = candidate - current_q[m
+[32m+[m[32m                angle_difference = np.array([[m
+[32m+[m[32m                    self.wrap_angle(x) for x in angle_difference[m
+[32m+[m[32m                ])[m
+[32m+[m[32m                movement_cost = np.sum(np.abs(angle_difference))[m
+[32m+[m
+[32m+[m[32m                solutions.append({[m
+[32m+[m[32m                    "q": candidate,[m
+[32m+[m[32m                    "error": position_error,[m
+[32m+[m[32m                    "movement": movement_cost,[m
+[32m+[m[32m                })[m
+[32m+[m
+[32m+[m[32m        if len(solutions) == 0:[m
+[32m+[m[32m            print("No analytical IK solution found.")[m
+[32m+[m[32m            print("Falling back to Jacobian IK.")[m
+[32m+[m[32m            return self.jacobian_ik(target, current_q)[m
+[32m+[m
+[32m+[m[32m        # Prefer the solution requiring the least joint movement.[m
+[32m+[m[32m        solutions.sort(key=lambda solution: solution["movement"])[m
+[32m+[m[32m        best_solution = solutions[0][m
+[32m+[m[32m        return best_solution["q"].tolist()[m
+[32m+[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+[32m+[m[32m    # Damped-least-squares Jacobian IK (fallback only)[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+[32m+[m[32m    def jacobian_ik(self, target, initial_guess, max_iterations=1000,[m
+[32m+[m[32m                    tolerance=1e-5, damping=0.15, step_size=0.5,[m
+[32m+[m[32m                    max_joint_step=0.08):[m
+[32m+[m
+[32m+[m[32m        q = np.asarray(initial_guess, dtype=float).copy()[m
+[32m+[m[32m        best_q = q.copy()[m
+[32m+[m[32m        best_error = float("inf")[m
+[32m+[m
+[32m+[m[32m        for _ in range(max_iterations):[m
+[32m+[m[32m            current_position = np.asarray(self.end_effector(q))[m
+[32m+[m[32m            error = target - current_position[m
+[32m+[m[32m            error_norm = np.linalg.norm(error)[m
+[32m+[m
+[32m+[m[32m            if error_norm < best_error:[m
+[32m+[m[32m                best_error = error_norm[m
+[32m+[m[32m                best_q = q.copy()[m
+[32m+[m[32m            if error_norm < tolerance:[m
+[32m+[m[32m                return q.tolist()[m
+[32m+[m
+[32m+[m[32m            J = self.numerical_jacobian(q)[m
+[32m+[m[32m            I = np.eye(2)[m
+[32m+[m[32m            J_damped = J.T @ np.linalg.inv(J @ J.T + damping ** 2 * I)[m
+[32m+[m[32m            dq = J_damped @ error[m
+[32m+[m
+[32m+[m[32m            dq_norm = np.linalg.norm(dq)[m
+[32m+[m[32m            if dq_norm > max_joint_step:[m
+[32m+[m[32m                dq *= max_joint_step / dq_norm[m
+[32m+[m
+[32m+[m[32m            q += step_size * dq[m
+[32m+[m[32m            q = np.array([self.wrap_angle(x) for x in q])[m
+[32m+[m
+[32m+[m[32m        return best_q.tolist()[m
+[32m+[m
+[32m+[m
+[32m+[m[32mif __name__ == "__main__":[m
+[32m+[m[32m    arm = PlanarArm([3.0, 2.0, 1.5])[m
+[32m+[m[32m    current_angles = [np.radians(30), np.radians(-20), np.radians(-10)][m
+[32m+[m[32m    print("End effector:", arm.end_effector(current_angles))[m
+[32m+[m[32m    solution = arm.inverse_kinematics((4.0, 2.0), initial_guess=current_angles)[m
+[32m+[m[32m    print("IK solution (deg):", [f"{np.degrees(a):.2f}" for a in solution])[m
+[32m+[m[32m    print("Achieved:", [f"{v:.3f}" for v in arm.end_effector(solution)])[m
+[1mdiff --git a/src/planar_arm_control/resource/planar_arm_control b/src/planar_arm_control/resource/planar_arm_control[m
+[1mnew file mode 100644[m
+[1mindex 0000000..e69de29[m
+[1mdiff --git a/src/planar_arm_control/rviz/planar_arm.rviz b/src/planar_arm_control/rviz/planar_arm.rviz[m
+[1mnew file mode 100644[m
+[1mindex 0000000..4ab7b99[m
+[1m--- /dev/null[m
+[1m+++ b/src/planar_arm_control/rviz/planar_arm.rviz[m
+[36m@@ -0,0 +1,62 @@[m
+[32m+[m[32mPanels:[m
+[32m+[m[32m  - Class: rviz_common/Displays[m
+[32m+[m[32m    Help Height: 78[m
+[32m+[m[32m    Name: Displays[m
+[32m+[m[32m    Property Tree Widget:[m
+[32m+[m[32m      Expanded:[m
+[32m+[m[32m        - /Global Options1[m
+[32m+[m[32m        - /RobotModel1[m
+[32m+[m[32m      Splitter Ratio: 0.5[m
+[32m+[m[32m    Tree Height: 400[m
+[32m+[m[32m  - Class: rviz_common/Selection[m
+[32m+[m[32m    Name: Selection[m
+[32m+[m[32m  - Class: rviz_common/Views[m
+[32m+[m[32m    Name: Views[m
+[32m+[m[32mVisualization Manager:[m
+[32m+[m[32m  Class: ""[m
+[32m+[m[32m  Displays:[m
+[32m+[m[32m    - Class: rviz_default_plugins/Grid[m
+[32m+[m[32m      Name: Grid[m
+[32m+[m[32m      Cell Size: 1[m
+[32m+[m[32m      Enabled: true[m
+[32m+[m[32m      Plane: XZ[m
+[32m+[m[32m      Plane Cell Count: 20[m
+[32m+[m[32m      Reference Frame: <Fixed Frame>[m
+[32m+[m[32m      Value: true[m
+[32m+[m[32m    - Class: rviz_default_plugins/RobotModel[m
+[32m+[m[32m      Name: RobotModel[m
+[32m+[m[32m      Description Source: Topic[m
+[32m+[m[32m      Description Topic:[m
+[32m+[m[32m        Value: /robot_description[m
+[32m+[m[32m        Durability Policy: Transient Local[m
+[32m+[m[32m        History Policy: Keep Last[m
+[32m+[m[32m        Reliability Policy: Reliable[m
+[32m+[m[32m      Enabled: true[m
+[32m+[m[32m      Value: true[m
+[32m+[m[32m    - Class: rviz_default_plugins/TF[m
+[32m+[m[32m      Name: TF[m
+[32m+[m[32m      Enabled: true[m
+[32m+[m[32m      Value: true[m
+[32m+[m[32m  Enabled: true[m
+[32m+[m[32m  Global Options:[m
+[32m+[m[32m    Background Color: 48; 48; 48[m
+[32m+[m[32m    Fixed Frame: base_link[m
+[32m+[m[32m    Frame Rate: 30[m
+[32m+[m[32m  Name: root[m
+[32m+[m[32m  Tools:[m
+[32m+[m[32m    - Class: rviz_default_plugins/Interact[m
+[32m+[m[32m      Hide Inactive Objects: true[m
+[32m+[m[32m    - Class: rviz_default_plugins/MoveCamera[m
+[32m+[m[32m    - Class: rviz_default_plugins/Select[m
+[32m+[m[32m    - Class: rviz_default_plugins/FocusCamera[m
+[32m+[m[32m    - Class: rviz_default_plugins/Measure[m
+[32m+[m[32m  Views:[m
+[32m+[m[32m    Current:[m
+[32m+[m[32m      Class: rviz_default_plugins/Orbit[m
+[32m+[m[32m      Distance: 10[m
+[32m+[m[32m      Focal Point: 2; 0; 1[m
+[32m+[m[32m      Pitch: 0.45[m
+[32m+[m[32m      Yaw: 0.8[m
+[32m+[m[32mWindow Geometry:[m
+[32m+[m[32m  Height: 800[m
+[32m+[m[32m  Width: 1200[m
+[1mdiff --git a/src/planar_arm_control/setup.cfg b/src/planar_arm_control/setup.cfg[m
+[1mnew file mode 100644[m
+[1mindex 0000000..636b235[m
+[1m--- /dev/null[m
+[1m+++ b/src/planar_arm_control/setup.cfg[m
+[36m@@ -0,0 +1,4 @@[m
+[32m+[m[32m[develop][m
+[32m+[m[32mscript_dir=$base/lib/planar_arm_control[m
+[32m+[m[32m[install][m
+[32m+[m[32minstall_scripts=$base/lib/planar_arm_control[m
+[1mdiff --git a/src/planar_arm_control/setup.py b/src/planar_arm_control/setup.py[m
+[1mnew file mode 100644[m
+[1mindex 0000000..986a90e[m
+[1m--- /dev/null[m
+[1m+++ b/src/planar_arm_control/setup.py[m
+[36m@@ -0,0 +1,42 @@[m
+[32m+[m[32mimport os[m
+[32m+[m[32mfrom glob import glob[m
+[32m+[m
+[32m+[m[32mfrom setuptools import setup[m
+[32m+[m
+[32m+[m[32mpackage_name = "planar_arm_control"[m
+[32m+[m
+[32m+[m[32msetup([m
+[32m+[m[32m    name=package_name,[m
+[32m+[m[32m    version="0.1.0",[m
+[32m+[m[32m    packages=[package_name],[m
+[32m+[m[32m    data_files=[[m
+[32m+[m[32m        ("share/ament_index/resource_index/packages",[m
+[32m+[m[32m            ["resource/" + package_name]),[m
+[32m+[m[32m        ("share/" + package_name, ["package.xml"]),[m
+[32m+[m[32m        (os.path.join("share", package_name, "launch"),[m
+[32m+[m[32m            glob("launch/*.launch.py")),[m
+[32m+[m[32m        (os.path.join("share", package_name, "description", "urdf"),[m
+[32m+[m[32m            glob("description/urdf/*.urdf.xacro")),[m
+[32m+[m[32m        (os.path.join("share", package_name, "config"),[m
+[32m+[m[32m            glob("config/*")),[m
+[32m+[m[32m        (os.path.join("share", package_name, "worlds"),[m
+[32m+[m[32m            glob("worlds/*")),[m
+[32m+[m[32m        (os.path.join("share", package_name, "rviz"),[m
+[32m+[m[32m            glob("rviz/*")),[m
+[32m+[m[32m    ],[m
+[32m+[m[32m    install_requires=["setuptools"],[m
+[32m+[m[32m    zip_safe=True,[m
+[32m+[m[32m    maintainer="Kineshia Robotics",[m
+[32m+[m[32m    maintainer_email="hr@kineshia.in",[m
+[32m+[m[32m    description=([m
+[32m+[m[32m        "ROS 2 control + telemetry GUI for a 3-DoF planar manipulator."[m
+[32m+[m[32m    ),[m
+[32m+[m[32m    license="Proprietary — for evaluation use only",[m
+[32m+[m[32m    tests_require=["pytest"],[m
+[32m+[m[32m    entry_points={[m
+[32m+[m[32m        "console_scripts": [[m
+[32m+[m[32m            "controller_node = planar_arm_control.controller_node:main",[m
+[32m+[m[32m            "gui_node = planar_arm_control.gui_node:main",[m
+[32m+[m[32m        ],[m
+[32m+[m[32m    },[m
+[32m+[m[32m)[m
+[1mdiff --git a/src/planar_arm_control/test/test_motion.py b/src/planar_arm_control/test/test_motion.py[m
+[1mnew file mode 100644[m
+[1mindex 0000000..dbd8663[m
+[1m--- /dev/null[m
+[1m+++ b/src/planar_arm_control/test/test_motion.py[m
+[36m@@ -0,0 +1,70 @@[m
+[32m+[m[32m"""Unit tests for kinematic target validation and trajectory generation."""[m
+[32m+[m
+[32m+[m[32mimport math[m
+[32m+[m[32mimport unittest[m
+[32m+[m
+[32m+[m[32mimport numpy as np[m
+[32m+[m
+[32m+[m[32mfrom planar_arm_control.motion import ([m
+[32m+[m[32m    make_trajectory,[m
+[32m+[m[32m    solve_xy_target,[m
+[32m+[m[32m    trajectory_respects_constraints,[m
+[32m+[m[32m)[m
+[32m+[m[32mfrom planar_arm_control.planar_arm import PlanarArm[m
+[32m+[m
+[32m+[m
+[32m+[m[32mclass TestMotion(unittest.TestCase):[m
+[32m+[m[32m    """Verify trajectory limits and target handling with the provided arm."""[m
+[32m+[m
+[32m+[m[32m    def setUp(self):[m
+[32m+[m[32m        """Create the arm used by each independent test."""[m
+[32m+[m[32m        self.arm = PlanarArm([3.0, 2.0, 1.5])[m
+[32m+[m
+[32m+[m[32m    def test_quintic_trajectory_has_stationary_endpoints_and_bounded_speed([m
+[32m+[m[32m        self,[m
+[32m+[m[32m    ):[m
+[32m+[m[32m        """Check endpoints, velocity scaling, and constraint sampling."""[m
+[32m+[m[32m        start = [0.3, 0.0, 0.0][m
+[32m+[m[32m        goal = [1.3, 0.0, 0.0][m
+[32m+[m[32m        trajectory = make_trajectory(start, goal, 0.5, 1.0)[m
+[32m+[m
+[32m+[m[32m        np.testing.assert_allclose(trajectory.sample(0.0), start)[m
+[32m+[m[32m        np.testing.assert_allclose([m
+[32m+[m[32m            trajectory.sample(trajectory.duration), goal[m
+[32m+[m[32m        )[m
+[32m+[m[32m        self.assertGreaterEqual(trajectory.duration, 1.875)[m
+[32m+[m[32m        self.assertTrue([m
+[32m+[m[32m            trajectory_respects_constraints(self.arm, trajectory, 0.01)[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m        sample_times = np.linspace(0.0, trajectory.duration, 1001)[m
+[32m+[m[32m        samples = np.asarray([m
+[32m+[m[32m            [trajectory.sample(value) for value in sample_times][m
+[32m+[m[32m        )[m
+[32m+[m[32m        velocities = np.diff(samples, axis=0) / np.diff(sample_times)[:, None][m
+[32m+[m[32m        self.assertLessEqual(float(np.max(np.abs(velocities))), 1.001)[m
+[32m+[m[32m        self.assertTrue(np.all(np.abs(samples[:, 0]) <= math.pi))[m
+[32m+[m
+[32m+[m[32m    def test_xy_target_uses_ik_and_returns_a_valid_solution(self):[m
+[32m+[m[32m        """Confirm IK matches the requested end-effector point."""[m
+[32m+[m[32m        known_positions = [0.6, 0.2, -0.2][m
+[32m+[m[32m        target = self.arm.end_effector(known_positions)[m
+[32m+[m
+[32m+[m[32m        solution = solve_xy_target(self.arm, target, known_positions)[m
+[32m+[m
+[32m+[m[32m        self.assertTrue(self.arm.within_joint_limits(solution))[m
+[32m+[m[32m        self.assertTrue(self.arm.arm_above_base(solution))[m
+[32m+[m[32m        np.testing.assert_allclose([m
+[32m+[m[32m            self.arm.end_effector(solution), target, atol=1e-4[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    def test_xy_target_outside_reach_is_rejected(self):[m
+[32m+[m[32m        """Reject targets beyond the arm's maximum radial reach."""[m
+[32m+[m[32m        with self.assertRaisesRegex([m
+[32m+[m[32m            ValueError, "outside the arm's reachable radius"[m
+[32m+[m[32m        ):[m
+[32m+[m[32m            solve_xy_target(self.arm, (10.0, 0.0), [0.0, 0.0, 0.0])[m
+[32m+[m
+[32m+[m
+[32m+[m[32mif __name__ == "__main__":[m
+[32m+[m[32m    unittest.main()[m
+[1mdiff --git a/src/planar_arm_control/worlds/planar_arm_world.sdf b/src/planar_arm_control/worlds/planar_arm_world.sdf[m
+[1mnew file mode 100644[m
+[1mindex 0000000..45270e9[m
+[1m--- /dev/null[m
+[1m+++ b/src/planar_arm_control/worlds/planar_arm_world.sdf[m
+[36m@@ -0,0 +1,48 @@[m
+[32m+[m[32m<?xml version="1.0"?>[m
+[32m+[m[32m<sdf version="1.9">[m
+[32m+[m[32m  <world name="planar_arm_world">[m
+[32m+[m[32m    <physics name="default_physics" type="ignored">[m
+[32m+[m[32m      <max_step_size>0.001</max_step_size>[m
+[32m+[m[32m      <real_time_factor>1.0</real_time_factor>[m
+[32m+[m[32m    </physics>[m
+[32m+[m[32m    <plugin filename="gz-sim-physics-system"[m
+[32m+[m[32m            name="gz::sim::systems::Physics"/>[m
+[32m+[m[32m    <plugin filename="gz-sim-scene-broadcaster-system"[m
+[32m+[m[32m            name="gz::sim::systems::SceneBroadcaster"/>[m
+[32m+[m[32m    <plugin filename="gz-sim-user-commands-system"[m
+[32m+[m[32m            name="gz::sim::systems::UserCommands"/>[m
+[32m+[m[32m    <gravity>0 0 -9.8</gravity>[m
+[32m+[m[32m    <light name="sun" type="directional">[m
+[32m+[m[32m      <cast_shadows>true</cast_shadows>[m
+[32m+[m[32m      <pose>0 0 10 0 0 0</pose>[m
+[32m+[m[32m      <diffuse>0.8 0.8 0.8 1</diffuse>[m
+[32m+[m[32m      <specular>0.2 0.2 0.2 1</specular>[m
+[32m+[m[32m      <direction>-0.5 0.1 -0.9</direction>[m
+[32m+[m[32m    </light>[m
+[32m+[m[32m    <model name="ground_plane">[m
+[32m+[m[32m      <static>true</static>[m
+[32m+[m[32m      <link name="ground">[m
+[32m+[m[32m        <collision name="collision">[m
+[32m+[m[32m          <geometry>[m
+[32m+[m[32m            <plane>[m
+[32m+[m[32m              <normal>0 0 1</normal>[m
+[32m+[m[32m              <size>30 30</size>[m
+[32m+[m[32m            </plane>[m
+[32m+[m[32m          </geometry>[m
+[32m+[m[32m        </collision>[m
+[32m+[m[32m        <visual name="visual">[m
+[32m+[m[32m          <geometry>[m
+[32m+[m[32m            <plane>[m
+[32m+[m[32m              <normal>0 0 1</normal>[m
+[32m+[m[32m              <size>30 30</size>[m
+[32m+[m[32m            </plane>[m
+[32m+[m[32m          </geometry>[m
+[32m+[m[32m          <material>[m
+[32m+[m[32m            <ambient>0.45 0.45 0.45 1</ambient>[m
+[32m+[m[32m            <diffuse>0.55 0.55 0.55 1</diffuse>[m
+[32m+[m[32m          </material>[m
+[32m+[m[32m        </visual>[m
+[32m+[m[32m      </link>[m
+[32m+[m[32m    </model>[m
+[32m+[m[32m  </world>[m
+[32m+[m[32m</sdf>[m
