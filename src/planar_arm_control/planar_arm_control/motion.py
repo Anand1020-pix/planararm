@@ -64,6 +64,30 @@ def make_trajectory(
     )
 
 
+def clamp_joint_limit_roundoff(
+    arm,
+    joint_positions: list[float],
+    tolerance: float = 1e-9,
+) -> list[float]:
+    """Clamp only floating-point noise just beyond configured joint limits."""
+    positions = np.asarray(joint_positions, dtype=float)
+    limits = np.asarray(arm.joint_limits, dtype=float)
+    if (
+        positions.shape != (arm.n_joints,)
+        or limits.shape != (arm.n_joints, 2)
+        or not np.all(np.isfinite(positions))
+    ):
+        return list(joint_positions)
+
+    clamped = positions.copy()
+    for index, (lower, upper) in enumerate(limits):
+        if lower - tolerance <= clamped[index] < lower:
+            clamped[index] = lower
+        elif upper < clamped[index] <= upper + tolerance:
+            clamped[index] = upper
+    return clamped.tolist()
+
+
 def trajectory_respects_constraints(
     arm,
     trajectory: QuinticTrajectory,

@@ -6,6 +6,7 @@ import unittest
 import numpy as np
 
 from planar_arm_control.motion import (
+    clamp_joint_limit_roundoff,
     make_trajectory,
     solve_xy_target,
     trajectory_respects_constraints,
@@ -64,6 +65,22 @@ class TestMotion(unittest.TestCase):
             ValueError, "outside the arm's reachable radius"
         ):
             solve_xy_target(self.arm, (10.0, 0.0), [0.0, 0.0, 0.0])
+
+    def test_feedback_roundoff_near_limit_is_clamped_but_real_error_remains(
+        self,
+    ):
+        """Correct negligible feedback noise without hiding limit violations."""
+        near_limit = clamp_joint_limit_roundoff(
+            self.arm, [-1e-14, 0.0, 0.0]
+        )
+        self.assertEqual(near_limit[0], 0.0)
+        self.assertTrue(self.arm.within_joint_limits(near_limit))
+
+        outside_limit = clamp_joint_limit_roundoff(
+            self.arm, [-1e-6, 0.0, 0.0]
+        )
+        self.assertEqual(outside_limit[0], -1e-6)
+        self.assertFalse(self.arm.within_joint_limits(outside_limit))
 
 
 if __name__ == "__main__":

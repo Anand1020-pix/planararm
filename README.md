@@ -1,8 +1,7 @@
 # Planar Arm ROS 2 Controller
 
-ROS 2 Jazzy control, teleoperation, and RViz visualization for a 3-DoF planar
-arm. The default bringup runs an in-process simulated arm and does not launch
-Gazebo. The provided
+ROS 2 Jazzy control, teleoperation, RViz visualization, and Gazebo Harmonic
+simulation for a 3-DoF planar arm. The provided
 [`planar_arm.py`](src/planar_arm_control/planar_arm_control/planar_arm.py)
 kinematics library is used unchanged.
 
@@ -25,6 +24,11 @@ Install ROS 2 Jazzy and the controller/visualization dependencies:
 
 ```bash
 sudo apt install \
+  ros-jazzy-ros-gz ros-jazzy-gz-ros2-control \
+  ros-jazzy-ros2-control ros-jazzy-controller-manager \
+  ros-jazzy-joint-state-broadcaster \
+  ros-jazzy-joint-trajectory-controller \
+  ros-jazzy-ros-gz-bridge ros-jazzy-ros-gz-sim \
   ros-jazzy-robot-state-publisher ros-jazzy-xacro ros-jazzy-rviz2 \
   ros-jazzy-joy python3-numpy python3-pyqt5 python3-pyqtgraph
 ```
@@ -45,6 +49,19 @@ GUI:
 ```bash
 ros2 launch planar_arm_control bringup.launch.py
 ```
+
+To see and control the moving robot in Gazebo, launch the Gazebo-backed
+simulation instead:
+
+```bash
+ros2 launch planar_arm_control simulation.launch.py
+```
+
+This opens Gazebo and the teleoperation GUI. The simulation launch spawns the
+arm, starts the joint-state broadcaster and trajectory controller, and sends
+the planner's joint setpoints to Gazebo through `ros2_control`. Use the GUI's
+XY or joint target controls to move the arm. Set `gui:=false` for a simulator-
+only run; set `gazebo_gui:=false` to run the Gazebo server headlessly.
 
 The GUI's XY and joint controls publish targets to the controller. Start RViz
 manually in another terminal if you want to view the robot model:
@@ -81,8 +98,11 @@ ros2 launch planar_arm_control display.launch.py
   constraints are rejected and reported on `/controller_status`.
 * `/joint_target` (`std_msgs/Float64MultiArray`): three joint positions in
   radians. This shares the same path planner and constraint checks.
-* `/joint_states` (`sensor_msgs/JointState`): fixed-rate state from the
-  in-process simulated backend.
+* `/joint_states` (`sensor_msgs/JointState`): feedback from Gazebo's
+  joint-state broadcaster in `simulation.launch.py`, or fixed-rate state from
+  the in-process backend in `bringup.launch.py`.
+* `/joint_trajectory_controller/joint_trajectory`
+  (`trajectory_msgs/JointTrajectory`): Gazebo ros2_control command stream.
 
 Example Cartesian command:
 
@@ -95,11 +115,30 @@ The controller uses a quintic time scaling with zero endpoint velocity and
 acceleration. `publish_rate_hz`, `trajectory_duration`,
 `max_joint_velocity`, `backend_mode`, topic names, joystick rates/steps, and
 the joystick trajectory duration are ROS parameters. `bringup.launch.py` uses
-the `simulated` backend. The controller also has an optional `ros2_control`
-trajectory backend for a separately configured hardware system. The planner
-depends on the small `JointCommandBackend` boundary; a hardware adapter can
-replace the backend without changing IK, trajectory timing, or constraint
-validation.
+the `simulated` backend; `simulation.launch.py` uses the `ros2_control`
+trajectory backend. The planner depends on the small `JointCommandBackend`
+boundary; a hardware adapter can replace the backend without changing IK,
+trajectory timing, or constraint validation.
+
+If Gazebo exits while activating the trajectory controller, make sure the ROS
+2 control packages are from a consistent Jazzy installation. Update the
+controller manager, controller interfaces, hardware interface, Gazebo
+integration, and joint controllers together before retrying:
+
+```bash
+sudo apt update
+sudo apt install --only-upgrade \
+  ros-jazzy-controller-manager ros-jazzy-controller-interface \
+  ros-jazzy-hardware-interface ros-jazzy-ros2-control \
+  ros-jazzy-gz-ros2-control ros-jazzy-joint-state-broadcaster \
+  ros-jazzy-joint-trajectory-controller ros-jazzy-diagnostic-updater
+```
+
+The Gazebo server must be launched from a terminal where
+`/opt/ros/jazzy/setup.bash` has been sourced. A missing-symbol error mentioning
+`diagnostic_updater::Updater` indicates that the installed
+`ros-jazzy-diagnostic-updater` is older than the controller manager expects;
+upgrade it with the other ROS control packages above.
 
 ## Teleoperation
 

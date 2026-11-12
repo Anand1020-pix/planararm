@@ -16,6 +16,7 @@ from planar_arm_control.backends import (
     SimulatedJointBackend,
 )
 from planar_arm_control.motion import (
+    clamp_joint_limit_roundoff,
     make_trajectory,
     solve_xy_target,
     trajectory_respects_constraints,
@@ -188,6 +189,7 @@ class ControllerNode(Node):
                 self._status("Waiting for joint-state feedback")
                 self._waiting_for_feedback_reported = True
             return None
+        positions = clamp_joint_limit_roundoff(self.arm, positions)
         if self._waiting_for_feedback_reported:
             self._status("Ready")
         self._waiting_for_feedback_reported = False
