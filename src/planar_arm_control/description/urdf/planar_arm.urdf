@@ -1,0 +1,102 @@
+
+<?xml version="1.0"?>
+<robot name="planar_arm">
+
+  <!-- Base -->
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0.1"/>
+      <geometry>
+        <cylinder radius="0.25" length="0.2"/>
+      </geometry>
+      <material name="base_color">
+        <color rgba="0.2 0.2 0.25 1"/>
+      </material>
+    </visual>
+  </link>
+
+  <!-- Link 1: Length 3.0 -->
+  <link name="link1">
+    <visual>
+      <origin xyz="1.5 0 0"/>
+      <geometry>
+        <box size="3.0 0.15 0.15"/>
+      </geometry>
+      <material name="link_color">
+        <color rgba="0.1 0.4 0.9 1"/>
+      </material>
+    </visual>
+  </link>
+
+  <joint name="joint1" type="revolute">
+    <parent link="base_link"/>
+    <child link="link1"/>
+    <origin xyz="0 0 0.2"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="0" upper="3.14159265"
+           effort="10" velocity="1.0"/>
+  </joint>
+
+  <!-- Link 2: Length 2.0 -->
+  <link name="link2">
+    <visual>
+      <origin xyz="1.0 0 0"/>
+      <geometry>
+        <box size="2.0 0.13 0.13"/>
+      </geometry>
+      <material name="link2_color">
+        <color rgba="0.1 0.8 0.4 1"/>
+      </material>
+    </visual>
+  </link>
+
+  <joint name="joint2" type="revolute">
+    <parent link="link1"/>
+    <child link="link2"/>
+    <origin xyz="3.0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.0943951" upper="2.0943951"
+           effort="10" velocity="1.0"/>
+  </joint>
+
+  <!-- Link 3: Length 1.5 -->
+  <link name="link3">
+    <visual>
+      <origin xyz="0.75 0 0"/>
+      <geometry>
+        <box size="1.5 0.11 0.11"/>
+      </geometry>
+      <material name="link3_color">
+        <color rgba="0.9 0.4 0.1 1"/>
+      </material>
+    </visual>
+  </link>
+
+  <joint name="joint3" type="revolute">
+    <parent link="link2"/>
+    <child link="link3"/>
+    <origin xyz="2.0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.0943951" upper="2.0943951"
+           effort="10" velocity="1.0"/>
+  </joint>
+
+  <!-- End effector -->
+  <link name="tool_link">
+    <visual>
+      <geometry>
+        <sphere radius="0.12"/>
+      </geometry>
+      <material name="tool_color">
+        <color rgba="1 0.1 0.1 1"/>
+      </material>
+    </visual>
+  </link>
+
+  <joint name="tool_fixed_joint" type="fixed">
+    <parent link="link3"/>
+    <child link="tool_link"/>
+    <origin xyz="1.5 0 0"/>
+  </joint>
+
+</robot>
