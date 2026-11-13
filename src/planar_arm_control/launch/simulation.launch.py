@@ -16,6 +16,7 @@ from launch.substitutions import (
     PathJoinSubstitution,
 )
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -35,12 +36,12 @@ def generate_launch_description():
     gazebo_launch_file = PathJoinSubstitution(
         [gazebo_share, "launch", "gz_sim.launch.py"]
     )
-    robot_description = Command([
+    robot_description = ParameterValue(Command([
         "xacro ",
         description_file,
         " controller_config:=",
         controller_config,
-    ])
+    ]), value_type=str)
     use_sim_time = LaunchConfiguration("use_sim_time")
 
     gazebo_gui = IncludeLaunchDescription(
@@ -65,7 +66,7 @@ def generate_launch_description():
             "-name", "planar_arm",
             "-topic", "robot_description",
             "-allow_renaming", "true",
-            "-z", "0.2",
+            "-z", "0.0",
         ],
         output="screen",
     )
@@ -89,6 +90,26 @@ def generate_launch_description():
         ],
         output="screen",
     )
+    spawn_gripper_controller = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=[
+            "gripper_controller",
+            "--controller-manager", "/controller_manager",
+            "--controller-manager-timeout", "120",
+        ],
+        output="screen",
+    )
+    controller_node = Node(
+        package="planar_arm_control",
+        executable="controller_node",
+        name="controller_node",
+        output="screen",
+        parameters=[
+            {"backend_mode": "ros2_control"},
+            {"use_sim_time": use_sim_time},
+        ],
+    )
 
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="true"),
@@ -110,33 +131,12 @@ def generate_launch_description():
             output="screen",
         ),
         Node(
-            package="ros_gz_bridge",
-            executable="parameter_bridge",
-            name="entity_pose_bridge",
-            arguments=[
-                "/world/planar_arm_world/set_pose"
-                "@ros_gz_interfaces/srv/SetEntityPose"
-                "@gz.msgs.Pose@gz.msgs.Boolean"
-            ],
-            output="screen",
-        ),
-        Node(
             package="robot_state_publisher",
             executable="robot_state_publisher",
             name="robot_state_publisher",
             output="screen",
             parameters=[
                 {"robot_description": robot_description},
-                {"use_sim_time": use_sim_time},
-            ],
-        ),
-        Node(
-            package="planar_arm_control",
-            executable="controller_node",
-            name="controller_node",
-            output="screen",
-            parameters=[
-                {"backend_mode": "ros2_control"},
                 {"use_sim_time": use_sim_time},
             ],
         ),
@@ -166,6 +166,12 @@ def generate_launch_description():
             OnProcessExit(
                 target_action=spawn_joint_state_broadcaster,
                 on_exit=[spawn_trajectory_controller],
+            )
+        ),
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=spawn_trajectory_controller,
+                on_exit=[spawn_gripper_controller, controller_node],
             )
         ),
     ])

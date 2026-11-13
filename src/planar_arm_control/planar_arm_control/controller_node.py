@@ -24,6 +24,7 @@ from planar_arm_control.motion import (
 from planar_arm_control.planar_arm import PlanarArm
 
 LINK_LENGTHS = [3.0, 2.0, 1.5]
+HOME_POSITIONS = [math.radians(75.0), math.radians(99.0), 0.0]
 
 
 class ControllerNode(Node):
@@ -37,6 +38,7 @@ class ControllerNode(Node):
         self.declare_parameter("publish_rate_hz", 50.0)
         self.declare_parameter("trajectory_duration", 2.0)
         self.declare_parameter("max_joint_velocity", 1.0)
+        self.declare_parameter("home_positions", HOME_POSITIONS)
         self.declare_parameter("backend_mode", "simulated")
         self.declare_parameter("joint_names", ["joint1", "joint2", "joint3"])
         self.declare_parameter("target_topic", "/target_pose")
@@ -69,6 +71,10 @@ class ControllerNode(Node):
         self._max_joint_velocity = float(
             self.get_parameter("max_joint_velocity").value
         )
+        self._home_positions = [
+            float(value)
+            for value in self.get_parameter("home_positions").value
+        ]
         self._joystick_xy_speed = float(
             self.get_parameter("joystick_xy_speed").value
         )
@@ -105,11 +111,20 @@ class ControllerNode(Node):
             raise ValueError(
                 "joint_names must be distinct and match arm joint count"
             )
+        if (
+            len(self._home_positions) != self.arm.n_joints
+            or not all(math.isfinite(value) for value in self._home_positions)
+            or not self.arm.within_joint_limits(self._home_positions)
+            or not self.arm.arm_above_base(self._home_positions)
+        ):
+            raise ValueError(
+                "home_positions must be a valid, ground-safe joint pose"
+            )
 
         backend_mode = str(self.get_parameter("backend_mode").value)
         if backend_mode == "simulated":
             self._backend = SimulatedJointBackend(
-                self._joint_names, [0.0, 0.0, 0.0]
+                self._joint_names, self._home_positions
             )
             self._joint_state_publisher = self.create_publisher(
                 JointState,
@@ -166,7 +181,9 @@ class ControllerNode(Node):
         self._joy_target_xy = None
         self._joy_last_update = time.monotonic()
         self._previous_joy_buttons: list[int] = []
-        self._previous_positions = [0.0] * self.arm.n_joints
+        self._previous_positions = list(self._home_positions)
+        self._startup_pose_pending = backend_mode == "ros2_control"
+        self._startup_wait_reported = False
         self._waiting_for_feedback_reported = False
         self._timer = self.create_timer(self._period, self._on_timer)
         self._status("Ready")
@@ -272,6 +289,12 @@ class ControllerNode(Node):
         goal: list[float],
         minimum_duration: float | None = None,
     ) -> None:
+        if (
+            self._command_publisher is not None
+            and self._command_publisher.get_subscription_count() == 0
+        ):
+            self._reject("Joint trajectory controller is not active")
+            return
         if not all(math.isfinite(value) for value in start):
             self._reject("Current joint state contains non-finite positions")
             return
@@ -382,6 +405,22 @@ class ControllerNode(Node):
         positions = self._current_positions()
         if positions is None:
             return
+
+        if self._startup_pose_pending:
+            if (
+                self._command_publisher is not None
+                and self._command_publisher.get_subscription_count() > 0
+            ):
+                self._startup_pose_pending = False
+                self._on_joint_target(
+                    Float64MultiArray(data=self._home_positions)
+                )
+                positions = self._current_positions()
+                if positions is None:
+                    return
+            elif not self._startup_wait_reported:
+                self._status("Waiting for joint trajectory controller")
+                self._startup_wait_reported = True
 
         if self._trajectory is not None:
             elapsed = self._clock_seconds() - self._trajectory_started_at

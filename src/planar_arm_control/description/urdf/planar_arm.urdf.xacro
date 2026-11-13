@@ -167,21 +167,24 @@
   <!-- End effector -->
   <link name="tool_link">
     <inertial>
+      <origin xyz="-0.25 0 0"/>
       <mass value="0.1"/>
       <inertia ixx="0.001" ixy="0" ixz="0"
                iyy="0.001" iyz="0" izz="0.001"/>
     </inertial>
 
     <visual>
+      <origin xyz="-0.25 0 0"/>
       <geometry>
-        <sphere radius="0.12"/>
+        <sphere radius="0.07"/>
       </geometry>
       <material name="tool_color"/>
     </visual>
 
     <collision>
+      <origin xyz="-0.25 0 0"/>
       <geometry>
-        <sphere radius="0.12"/>
+        <sphere radius="0.07"/>
       </geometry>
     </collision>
   </link>
@@ -192,6 +195,74 @@
     <origin xyz="1.5 0 0"/>
   </joint>
 
+  <!-- Parallel-jaw gripper: both fingers move outward when opened. -->
+  <link name="left_finger">
+    <inertial>
+      <origin xyz="0.20 0 0"/>
+      <mass value="0.15"/>
+      <inertia ixx="0.00089" ixy="0" ixz="0"
+               iyy="0.00285" iyz="0" izz="0.00205"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.20 0 0"/>
+      <geometry><box size="0.40 0.06 0.26"/></geometry>
+      <material name="tool_color"/>
+    </visual>
+    <collision>
+      <origin xyz="0.20 0 0"/>
+      <geometry><box size="0.40 0.06 0.26"/></geometry>
+    </collision>
+  </link>
+
+  <joint name="left_finger_joint" type="prismatic">
+    <parent link="tool_link"/>
+    <child link="left_finger"/>
+    <origin xyz="-0.13 -0.17 0"/>
+    <axis xyz="0 -1 0"/>
+    <limit lower="-0.05" upper="0.16" effort="20" velocity="0.2"/>
+    <dynamics damping="1.0" friction="0.1"/>
+  </joint>
+
+  <link name="right_finger">
+    <inertial>
+      <origin xyz="0.20 0 0"/>
+      <mass value="0.15"/>
+      <inertia ixx="0.00089" ixy="0" ixz="0"
+               iyy="0.00285" iyz="0" izz="0.00205"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.20 0 0"/>
+      <geometry><box size="0.40 0.06 0.26"/></geometry>
+      <material name="tool_color"/>
+    </visual>
+    <collision>
+      <origin xyz="0.20 0 0"/>
+      <geometry><box size="0.40 0.06 0.26"/></geometry>
+    </collision>
+  </link>
+
+  <joint name="right_finger_joint" type="prismatic">
+    <parent link="tool_link"/>
+    <child link="right_finger"/>
+    <origin xyz="-0.13 0.17 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-0.05" upper="0.16" effort="20" velocity="0.2"/>
+    <dynamics damping="1.0" friction="0.1"/>
+  </joint>
+
+  <gazebo reference="left_finger">
+    <mu1>3.0</mu1>
+    <mu2>3.0</mu2>
+    <kp>1000000.0</kp>
+    <kd>1.0</kd>
+  </gazebo>
+  <gazebo reference="right_finger">
+    <mu1>3.0</mu1>
+    <mu2>3.0</mu2>
+    <kp>1000000.0</kp>
+    <kd>1.0</kd>
+  </gazebo>
+
   <!-- ROS 2 Control -->
   <ros2_control name="PlanarArmSystem" type="system">
     <hardware>
@@ -200,17 +271,35 @@
 
     <joint name="joint1">
       <command_interface name="position"/>
-      <state_interface name="position"/>
+      <state_interface name="position">
+        <param name="initial_value">1.308996939</param>
+      </state_interface>
       <state_interface name="velocity"/>
     </joint>
 
     <joint name="joint2">
       <command_interface name="position"/>
-      <state_interface name="position"/>
+      <state_interface name="position">
+        <param name="initial_value">1.727875960</param>
+      </state_interface>
       <state_interface name="velocity"/>
     </joint>
 
     <joint name="joint3">
+      <command_interface name="position"/>
+      <state_interface name="position">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+
+    <joint name="left_finger_joint">
+      <command_interface name="position"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+
+    <joint name="right_finger_joint">
       <command_interface name="position"/>
       <state_interface name="position"/>
       <state_interface name="velocity"/>

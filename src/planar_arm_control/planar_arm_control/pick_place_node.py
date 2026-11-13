@@ -7,11 +7,10 @@ import time
 import rclpy
 from geometry_msgs.msg import PointStamped
 from rclpy.node import Node
-from ros_gz_interfaces.msg import Entity
-from ros_gz_interfaces.srv import SetEntityPose
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from planar_arm_control.motion import (
     clamp_joint_limit_roundoff,
@@ -22,71 +21,73 @@ from planar_arm_control.motion import (
 from planar_arm_control.planar_arm import PlanarArm
 
 LINK_LENGTHS = [3.0, 2.0, 1.5]
-BASE_HEIGHT = 0.2
-PICK_XY = (4.0, 2.0)
+PICK_XY = (4.0, 1.95)
 PLACE_XY = (-3.0, 3.0)
 APPROACH_HEIGHT = 0.3
-OBJECT_NAME = "pick_item"
-POSE_SERVICE = "/world/planar_arm_world/set_pose"
+GRIPPER_OPEN_POSITION = 0.14
+GRIPPER_CLOSED_POSITION = -0.02
 
 
-def build_pick_waypoints():
+def build_pick_waypoints(pick_xy=PICK_XY):
     """Return approach, contact, and lift targets for the pick operation."""
     return [
         (
             "Approaching pick",
-            (PICK_XY[0], PICK_XY[1] + APPROACH_HEIGHT),
+            (pick_xy[0], pick_xy[1] + APPROACH_HEIGHT),
         ),
-        ("Picking item", PICK_XY),
-        ("Lifting item", (PICK_XY[0], PICK_XY[1] + APPROACH_HEIGHT)),
+        ("Picking item", pick_xy),
+        ("Lifting item", (pick_xy[0], pick_xy[1] + APPROACH_HEIGHT)),
     ]
 
 
-def build_place_waypoints():
+def build_place_waypoints(place_xy=PLACE_XY):
     """Return carry and release targets for the place operation."""
     return [
-        ("Carrying item", (PLACE_XY[0], PLACE_XY[1] + APPROACH_HEIGHT)),
-        ("Placing item", PLACE_XY),
+        ("Carrying item", (place_xy[0], place_xy[1] + APPROACH_HEIGHT)),
+        ("Placing item", place_xy),
     ]
 
 
-def build_pick_place_waypoints():
+def build_pick_place_waypoints(pick_xy=PICK_XY, place_xy=PLACE_XY):
     """Return the full approach, pick, carry, and place route."""
-    return build_pick_waypoints() + build_place_waypoints()
-
-
-def tool_planar_position(
-    arm: PlanarArm, joint_positions: list[float]
-) -> tuple[float, float]:
-    """Return measured tool XY for attaching or releasing the item."""
-    x, y = arm.end_effector(joint_positions)
-    return float(x), float(y)
+    return (
+        build_pick_waypoints(pick_xy)
+        + build_place_waypoints(place_xy)
+    )
 
 
 class PickPlaceNode(Node):
-    """Run safe waypoints and visually attach the Gazebo item."""
+    """Run safe waypoints and operate the physical parallel-jaw gripper."""
 
     def __init__(self):
         """Create task interfaces and initialize the sequence state."""
         super().__init__("pick_place_node")
         self.arm = PlanarArm(LINK_LENGTHS)
+        self.declare_parameter("pick_x", PICK_XY[0])
+        self.declare_parameter("pick_y", PICK_XY[1])
+        self.declare_parameter("place_x", PLACE_XY[0])
+        self.declare_parameter("place_y", PLACE_XY[1])
         self._joint_positions: list[float] | None = None
         self._controller_status = ""
         self._running = False
         self._sequence_ready = False
-        self._attached = False
         self._picked = False
         self._operation: str | None = None
         self._stage_index = 0
+        self._waypoints: list[tuple[str, tuple[float, float]]] = []
         self._stage_started = False
         self._stage_complete = False
         self._stage_deadline = 0.0
-        self._last_object_update = 0.0
-        self._pose_request_pending = False
-        self._queued_item_pose: tuple[float, float] | None = None
+        self._gripper_settle_until = 0.0
+        self._gripper_action_sent = False
 
         self._target_publisher = self.create_publisher(
             PointStamped, "/target_pose", 10
+        )
+        self._gripper_publisher = self.create_publisher(
+            JointTrajectory,
+            "/gripper_controller/joint_trajectory",
+            10,
         )
         self._status_publisher = self.create_publisher(
             String, "/pick_place/status", 10
@@ -97,11 +98,11 @@ class PickPlaceNode(Node):
         self.create_subscription(
             String, "/controller_status", self._on_controller_status, 10
         )
-        self._pose_client = self.create_client(SetEntityPose, POSE_SERVICE)
         self.create_service(Trigger, "/pick_place/pick", self._on_pick)
         self.create_service(Trigger, "/pick_place/place", self._on_place)
         self.create_service(Trigger, "/pick_place/release", self._on_release)
         self._timer = self.create_timer(0.05, self._on_timer)
+        self._startup_gripper_pending = True
         self._publish_status("Ready")
 
     def _publish_status(self, text: str) -> None:
@@ -119,6 +120,27 @@ class PickPlaceNode(Node):
             self._joint_positions = clamp_joint_limit_roundoff(
                 self.arm, positions
             )
+
+    def _target_from_parameters(
+        self, target_name: str
+    ) -> tuple[float, float] | None:
+        x = float(self.get_parameter(f"{target_name}_x").value)
+        y = float(self.get_parameter(f"{target_name}_y").value)
+        if not math.isfinite(x) or not math.isfinite(y):
+            return None
+        return x, y
+
+    def _command_gripper(self, opened: bool) -> None:
+        position = (
+            GRIPPER_OPEN_POSITION if opened else GRIPPER_CLOSED_POSITION
+        )
+        message = JointTrajectory()
+        message.joint_names = ["left_finger_joint", "right_finger_joint"]
+        point = JointTrajectoryPoint()
+        point.positions = [position, position]
+        point.time_from_start.sec = 1
+        message.points = [point]
+        self._gripper_publisher.publish(message)
 
     def _on_controller_status(self, message: String) -> None:
         self._controller_status = message.data
@@ -150,10 +172,15 @@ class PickPlaceNode(Node):
         del request
         if self._picked:
             response.success = False
-            response.message = "The item is already picked; call /pick_place/place"
+            response.message = "The item is already picked:call /pick_place/place"
+            return response
+        pick_xy = self._target_from_parameters("pick")
+        if pick_xy is None:
+            response.success = False
+            response.message = "Pick coordinates must be finite"
             return response
         return self._begin_operation(
-            response, "pick", build_pick_waypoints(), reset_item=True
+            response, "pick", build_pick_waypoints(pick_xy)
         )
 
     def _on_place(self, request, response):
@@ -162,8 +189,13 @@ class PickPlaceNode(Node):
             response.success = False
             response.message = "Pick the item first with /pick_place/pick"
             return response
+        place_xy = self._target_from_parameters("place")
+        if place_xy is None:
+            response.success = False
+            response.message = "Place coordinates must be finite"
+            return response
         return self._begin_operation(
-            response, "place", build_place_waypoints(), reset_item=False
+            response, "place", build_place_waypoints(place_xy)
         )
 
     def _on_release(self, request, response):
@@ -172,32 +204,26 @@ class PickPlaceNode(Node):
             response.success = False
             response.message = "Wait for the current arm motion to finish"
             return response
-        if not self._picked or not self._attached:
+        if not self._picked:
             response.success = False
             response.message = "There is no held item to release"
             return response
-        if self._joint_positions is None:
+        if self._gripper_publisher.get_subscription_count() == 0:
             response.success = False
-            response.message = "Waiting for joint-state feedback"
+            response.message = "Gripper controller is not available"
             return response
-        x, y = tool_planar_position(self.arm, self._joint_positions)
-        self._release_item(x, y, "Item released")
-        response.success = True
-        response.message = f"Item released at ({x:.2f}, {y:.2f})"
-        return response
-
-    def _release_item(self, x: float, y: float, status: str) -> None:
-        self._attached = False
+        self._command_gripper(opened=True)
         self._picked = False
-        self._set_item_pose(x, y)
-        self._publish_status(f"{status} at ({x:.2f}, {y:.2f})")
+        self._publish_status("Gripper opened; item released")
+        response.success = True
+        response.message = "Gripper opened; item released"
+        return response
 
     def _begin_operation(
         self,
         response,
         operation: str,
         waypoints: list[tuple[str, tuple[float, float]]],
-        reset_item: bool,
     ):
         if self._running:
             response.success = False
@@ -211,11 +237,9 @@ class PickPlaceNode(Node):
             response.success = False
             response.message = "Controller is not subscribed to /target_pose"
             return response
-        if not self._pose_client.service_is_ready():
+        if self._gripper_publisher.get_subscription_count() == 0:
             response.success = False
-            response.message = (
-                f"Gazebo pose service is unavailable: {POSE_SERVICE}"
-            )
+            response.message = "Gripper controller is not available"
             return response
         if self._controller_status.startswith("Executing trajectory"):
             response.success = False
@@ -230,59 +254,16 @@ class PickPlaceNode(Node):
 
         self._running = True
         self._operation = operation
-        self._sequence_ready = not reset_item
-        self._attached = operation == "place"
+        self._sequence_ready = True
         self._stage_index = 0
-        if reset_item:
-            self._publish_status("Resetting item at pick position")
-            self._set_item_pose(*PICK_XY)
-        else:
-            self._send_current_waypoint()
+        self._waypoints = list(waypoints)
+        self._send_current_waypoint()
         response.success = True
         response.message = f"{operation.capitalize()} operation started"
         return response
 
-    def _set_item_pose(self, x: float, planar_y: float) -> None:
-        if self._pose_request_pending:
-            self._queued_item_pose = (float(x), float(planar_y))
-            return
-        request = SetEntityPose.Request()
-        request.entity.name = OBJECT_NAME
-        request.entity.type = Entity.MODEL
-        request.pose.position.x = float(x)
-        request.pose.position.y = 0.0
-        request.pose.position.z = BASE_HEIGHT + float(planar_y)
-        request.pose.orientation.w = 1.0
-        self._pose_request_pending = True
-        future = self._pose_client.call_async(request)
-        future.add_done_callback(self._on_item_pose_response)
-
-    def _on_item_pose_response(self, future) -> None:
-        self._pose_request_pending = False
-        try:
-            result = future.result()
-        except Exception as error:
-            self._fail(f"Gazebo could not set the item pose: {error}")
-            return
-        if not result.success:
-            self._fail("Gazebo rejected the item pose update")
-            return
-        if self._queued_item_pose is not None:
-            x, y = self._queued_item_pose
-            self._queued_item_pose = None
-            self._set_item_pose(x, y)
-            return
-        if self._running and not self._sequence_ready:
-            self._sequence_ready = True
-            self._send_current_waypoint()
-
     def _send_current_waypoint(self) -> None:
-        waypoints = (
-            build_pick_waypoints()
-            if self._operation == "pick"
-            else build_place_waypoints()
-        )
-        label, (x, y) = waypoints[self._stage_index]
+        label, (x, y) = self._waypoints[self._stage_index]
         target = PointStamped()
         target.header.stamp = self.get_clock().now().to_msg()
         target.header.frame_id = "base_link"
@@ -290,24 +271,18 @@ class PickPlaceNode(Node):
         target.point.z = y
         self._stage_started = False
         self._stage_complete = False
+        self._gripper_action_sent = False
         self._stage_deadline = time.monotonic() + 90.0
         self._publish_status(label)
         self._target_publisher.publish(target)
 
-    def _update_attached_item(self) -> None:
-        if (
-            self._joint_positions is None
-            or self._pose_request_pending
-            or time.monotonic() - self._last_object_update < 0.02
-        ):
-            return
-        x, y = tool_planar_position(self.arm, self._joint_positions)
-        self._set_item_pose(x, y)
-        self._last_object_update = time.monotonic()
-
     def _on_timer(self) -> None:
-        if self._attached:
-            self._update_attached_item()
+        if (
+            self._startup_gripper_pending
+            and self._gripper_publisher.get_subscription_count() > 0
+        ):
+            self._command_gripper(opened=True)
+            self._startup_gripper_pending = False
         if not self._running:
             return
         if not self._sequence_ready:
@@ -318,16 +293,26 @@ class PickPlaceNode(Node):
         if not self._stage_complete:
             return
 
-        waypoints = (
-            build_pick_waypoints()
-            if self._operation == "pick"
-            else build_place_waypoints()
+        needs_gripper_action = (
+            self._operation == "pick" and self._stage_index == 1
+        ) or (
+            self._operation == "place"
+            and self._stage_index == len(self._waypoints) - 1
         )
-        if self._stage_index < len(waypoints) - 1:
-            if self._operation == "pick" and self._stage_index == 1:
-                self._attached = True
-                self._last_object_update = 0.0
-                self._update_attached_item()
+        if needs_gripper_action:
+            if not self._gripper_action_sent:
+                opened = self._operation == "place"
+                self._command_gripper(opened=opened)
+                self._gripper_action_sent = True
+                self._gripper_settle_until = time.monotonic() + 1.0
+                self._publish_status(
+                    "Opening gripper" if opened else "Closing gripper"
+                )
+                return
+            if time.monotonic() < self._gripper_settle_until:
+                return
+
+        if self._stage_index < len(self._waypoints) - 1:
             self._stage_index += 1
             self._send_current_waypoint()
             return
@@ -336,17 +321,16 @@ class PickPlaceNode(Node):
             self._picked = True
             self._running = False
             self._sequence_ready = False
-            self._publish_status("Item lifted and picked; ready for place")
+            self._publish_status("Pick complete:ready to place")
         else:
             self._running = False
             self._sequence_ready = False
-            x, y = tool_planar_position(self.arm, self._joint_positions)
-            self._release_item(x, y, "Place complete")
+            self._picked = False
+            self._publish_status("Place complete: gripper released item")
 
     def _fail(self, reason: str) -> None:
         self._running = False
         self._sequence_ready = False
-        self._attached = self._picked
         self._publish_status(f"Failed: {reason}")
         self.get_logger().error(reason)
 

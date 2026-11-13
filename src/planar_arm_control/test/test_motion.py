@@ -11,10 +11,10 @@ from planar_arm_control.motion import (
     solve_xy_target,
     trajectory_respects_constraints,
 )
+from planar_arm_control.controller_node import HOME_POSITIONS
 from planar_arm_control.pick_place_node import (
     build_pick_place_waypoints,
     build_pick_waypoints,
-    tool_planar_position,
 )
 from planar_arm_control.planar_arm import PlanarArm
 
@@ -88,8 +88,8 @@ class TestMotion(unittest.TestCase):
         self.assertFalse(self.arm.within_joint_limits(outside_limit))
 
     def test_pick_place_waypoints_are_reachable_and_path_safe(self):
-        """Validate all requested pick/place stages from the home pose."""
-        current = [0.0, 0.0, 0.0]
+        """Validate all pick/place stages from the configured home pose."""
+        current = list(HOME_POSITIONS)
         for _, point in build_pick_place_waypoints():
             goal = solve_xy_target(self.arm, point, current)
             trajectory = make_trajectory(current, goal, 2.0, 1.0)
@@ -100,22 +100,35 @@ class TestMotion(unittest.TestCase):
             )
             current = goal
 
+    def test_requested_home_pose_is_bent_and_ground_safe(self):
+        """The startup pose matches the requested compact joint angles."""
+        np.testing.assert_allclose(
+            HOME_POSITIONS, np.radians([75.0, 99.0, 0.0])
+        )
+        self.assertTrue(self.arm.within_joint_limits(HOME_POSITIONS))
+        self.assertTrue(self.arm.arm_above_base(HOME_POSITIONS))
+        end_x, end_y = self.arm.end_effector(HOME_POSITIONS)
+        self.assertLess(math.hypot(end_x, end_y), sum(self.arm.link_lengths))
+
+    def test_pick_and_place_waypoints_accept_operator_coordinates(self):
+        """Task waypoints use user-selected source and destination points."""
+        self.assertEqual(
+            build_pick_waypoints((1.0, 2.0))[-1][1],
+            (1.0, 2.0 + 0.3),
+        )
+        self.assertEqual(
+            build_pick_place_waypoints(
+                (1.0, 2.0), (-1.0, 2.5)
+            )[-1][1],
+            (-1.0, 2.5),
+        )
+
     def test_pick_operation_includes_lifting_the_item(self):
         """Pick ends at the raised item pose before a separate place call."""
         pick_waypoints = build_pick_waypoints()
         self.assertEqual(len(pick_waypoints), 3)
         self.assertEqual(pick_waypoints[-1][0], "Lifting item")
-        self.assertEqual(pick_waypoints[-1][1], (4.0, 2.3))
-
-    def test_release_pose_uses_current_measured_arm_position(self):
-        """Release follows a changed arm pose rather than fixed place coords."""
-        joint_positions = [1.0, -0.5, 0.2]
-        expected = self.arm.end_effector(joint_positions)
-        self.assertEqual(
-            tool_planar_position(self.arm, joint_positions),
-            (float(expected[0]), float(expected[1])),
-        )
-
+        self.assertEqual(pick_waypoints[-1][1], (4.0, 2.25))
 
 if __name__ == "__main__":
     unittest.main()

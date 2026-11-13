@@ -9,6 +9,7 @@ from launch.substitutions import (
     PathJoinSubstitution,
 )
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -18,7 +19,9 @@ def generate_launch_description():
     description_file = PathJoinSubstitution(
         [package_share, "description", "urdf", "planar_arm.urdf.xacro"]
     )
-    robot_description = Command(["xacro ", description_file])
+    robot_description = ParameterValue(
+        Command(["xacro ", description_file]), value_type=str
+    )
     use_sim_time = LaunchConfiguration("use_sim_time")
 
     return LaunchDescription([

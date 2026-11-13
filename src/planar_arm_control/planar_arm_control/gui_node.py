@@ -8,10 +8,14 @@ import time
 
 import rclpy
 from geometry_msgs.msg import PointStamped
+from rclpy.parameter import Parameter
+from rclpy.parameter_client import AsyncParameterClient
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray, String
+from std_srvs.srv import Trigger
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 import pyqtgraph as pg
@@ -183,8 +187,13 @@ class GuiNode(Node):
         super().__init__("gui_node")
         self.arm = PlanarArm(LINK_LENGTHS)
         self._state_lock = threading.Lock()
-        self._positions = [0.0, 0.0, 0.0]
+        self._positions = [
+            math.radians(75.0),
+            math.radians(99.0),
+            0.0,
+        ]
         self._status = "Waiting for controller"
+        self._pick_place_status = "Pick/place: waiting for node"
         self._last_state_time = None
         self._joint_target_publisher = self.create_publisher(
             Float64MultiArray, "/joint_target", 10
@@ -192,11 +201,28 @@ class GuiNode(Node):
         self._xy_target_publisher = self.create_publisher(
             PointStamped, "/target_pose", 10
         )
+        self._gripper_publisher = self.create_publisher(
+            JointTrajectory,
+            "/gripper_controller/joint_trajectory",
+            10,
+        )
+        self._pick_place_parameters = AsyncParameterClient(
+            self, "/pick_place_node"
+        )
+        self._pick_client = self.create_client(
+            Trigger, "/pick_place/pick"
+        )
+        self._place_client = self.create_client(
+            Trigger, "/pick_place/place"
+        )
         self.create_subscription(
             JointState, "/joint_states", self._on_joint_state, 10
         )
         self.create_subscription(
             String, "/controller_status", self._on_status, 10
+        )
+        self.create_subscription(
+            String, "/pick_place/status", self._on_pick_place_status, 10
         )
 
     def _on_joint_state(self, message: JointState) -> None:
@@ -214,10 +240,18 @@ class GuiNode(Node):
         with self._state_lock:
             self._status = message.data
 
+    def _on_pick_place_status(self, message: String) -> None:
+        with self._state_lock:
+            self._pick_place_status = message.data
+
     def snapshot(self):
         """Return the latest positions and controller status consistently."""
         with self._state_lock:
-            return list(self._positions), self._status
+            return (
+                list(self._positions),
+                self._status,
+                self._pick_place_status,
+            )
 
     def telemetry_age(self):
         """Return seconds since the last joint state, or None if never."""
@@ -239,6 +273,92 @@ class GuiNode(Node):
         """Publish a three-joint target in radians."""
         self._joint_target_publisher.publish(
             Float64MultiArray(data=[float(value) for value in positions])
+        )
+
+    def command_gripper(self, opened: bool) -> bool:
+        """Command both simulated fingers open or closed."""
+        if self._gripper_publisher.get_subscription_count() == 0:
+            return False
+        position = 0.14 if opened else -0.02
+        message = JointTrajectory()
+        message.joint_names = ["left_finger_joint", "right_finger_joint"]
+        point = JointTrajectoryPoint()
+        point.positions = [position, position]
+        point.time_from_start.sec = 1
+        message.points = [point]
+        self._gripper_publisher.publish(message)
+        return True
+
+    def start_pick_place(
+        self,
+        action: str,
+        pick_xy: tuple[float, float],
+        place_xy: tuple[float, float],
+        callback,
+    ) -> None:
+        """Update task coordinates before requesting pick or place."""
+        clients = {
+            "pick": self._pick_client,
+            "place": self._place_client,
+        }
+        client = clients.get(action)
+        if client is None:
+            callback(f"Unknown pick/place action: {action}")
+            return
+        if not self._pick_place_parameters.services_are_ready():
+            callback("Pick/place parameter service is not ready")
+            return
+        if not client.service_is_ready():
+            callback(f"/pick_place/{action} service is not ready")
+            return
+
+        parameters = [
+            Parameter("pick_x", value=float(pick_xy[0])),
+            Parameter("pick_y", value=float(pick_xy[1])),
+            Parameter("place_x", value=float(place_xy[0])),
+            Parameter("place_y", value=float(place_xy[1])),
+        ]
+        future = self._pick_place_parameters.set_parameters(parameters)
+        future.add_done_callback(
+            lambda result: self._on_task_parameters_set(
+                result, client, action, callback
+            )
+        )
+
+    @staticmethod
+    def _on_task_parameters_set(future, client, action, callback) -> None:
+        try:
+            response = future.result()
+        except Exception as error:
+            callback(f"Could not configure pick/place task: {error}")
+            return
+        rejected = [
+            result.reason
+            for result in response.results
+            if not result.successful
+        ]
+        if rejected:
+            callback(f"Pick/place settings rejected: {'; '.join(rejected)}")
+            return
+        request = Trigger.Request()
+        service_future = client.call_async(request)
+        service_future.add_done_callback(
+            lambda result: GuiNode._on_task_service_result(
+                result, action, callback
+            )
+        )
+
+    @staticmethod
+    def _on_task_service_result(future, action, callback) -> None:
+        try:
+            response = future.result()
+        except Exception as error:
+            callback(f"{action.capitalize()} request failed: {error}")
+            return
+        callback(
+            response.message
+            if response.success
+            else f"{action.capitalize()} rejected: {response.message}"
         )
 
 
@@ -369,6 +489,8 @@ class JointRow(QtWidgets.QWidget):
 class ArmWindow(QtWidgets.QMainWindow):
     """Operator console: workspace view, controls, and live telemetry."""
 
+    operation_result = QtCore.pyqtSignal(str)
+
     def __init__(self, node: GuiNode):
         """Build the console around a ROS node."""
         super().__init__()
@@ -432,6 +554,7 @@ class ArmWindow(QtWidgets.QMainWindow):
         self._joint_fields_seeded = False
         self._last_logged_telemetry_state = None
         self._last_logged_controller_error = None
+        self.operation_result.connect(self._on_operation_result)
 
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self._refresh)
@@ -577,6 +700,7 @@ class ArmWindow(QtWidgets.QMainWindow):
         tabs.addTab(self._build_cartesian_tab(), "Cartesian")
         tabs.addTab(self._build_joint_tab(), "Joints")
         tabs.addTab(self._build_jog_tab(), "Jog")
+        tabs.addTab(self._build_pick_place_tab(), "Pick & Place")
         upper_layout.addWidget(tabs, 1)
 
         # Scrollable logs panel below the tabs
@@ -682,6 +806,71 @@ class ArmWindow(QtWidgets.QMainWindow):
         buttons.addWidget(use_current)
         buttons.addWidget(move_joints, 1)
         layout.addLayout(buttons)
+        layout.addStretch(1)
+        return page
+
+    def _build_pick_place_tab(self) -> QtWidgets.QWidget:
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        hint = QtWidgets.QLabel(
+            "Set planar X/Y coordinates on the table. Y maps to robot Z. "
+            "The arm closes its physical fingers at the pick point."
+        )
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        form = QtWidgets.QFormLayout()
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(8)
+        self.pick_x = self._coordinate_box()
+        self.pick_y = self._coordinate_box()
+        self.place_x = self._coordinate_box()
+        self.place_y = self._coordinate_box()
+        for box in (self.pick_y, self.place_y):
+            box.setMinimum(0.0)
+        self.pick_x.setValue(4.0)
+        self.pick_y.setValue(1.95)
+        self.place_x.setValue(-3.0)
+        self.place_y.setValue(3.0)
+        form.addRow("Pick X", self.pick_x)
+        form.addRow("Pick Y", self.pick_y)
+        form.addRow("Place X", self.place_x)
+        form.addRow("Place Y", self.place_y)
+        layout.addLayout(form)
+
+        task_buttons = QtWidgets.QHBoxLayout()
+        pick_button = QtWidgets.QPushButton("Pick")
+        pick_button.setObjectName("primary")
+        pick_button.clicked.connect(
+            lambda: self._start_pick_place("pick")
+        )
+        place_button = QtWidgets.QPushButton("Place")
+        place_button.clicked.connect(
+            lambda: self._start_pick_place("place")
+        )
+        task_buttons.addWidget(pick_button)
+        task_buttons.addWidget(place_button)
+        layout.addLayout(task_buttons)
+
+        gripper_buttons = QtWidgets.QHBoxLayout()
+        open_button = QtWidgets.QPushButton("Open gripper")
+        open_button.clicked.connect(lambda: self._command_gripper(True))
+        close_button = QtWidgets.QPushButton("Close gripper")
+        close_button.clicked.connect(lambda: self._command_gripper(False))
+        gripper_buttons.addWidget(open_button)
+        gripper_buttons.addWidget(close_button)
+        layout.addLayout(gripper_buttons)
+
+        self.pick_place_status_label = QtWidgets.QLabel(
+            "Pick/place: waiting for node"
+        )
+        self.pick_place_status_label.setObjectName("hint")
+        self.pick_place_status_label.setWordWrap(True)
+        layout.addWidget(self.pick_place_status_label)
         layout.addStretch(1)
         return page
 
@@ -822,7 +1011,7 @@ class ArmWindow(QtWidgets.QMainWindow):
         self._target_xy = (self.x_target.value(), self.y_target.value())
 
     def _set_xy_to_current(self):
-        positions, _ = self.node.snapshot()
+        positions, _, _ = self.node.snapshot()
         x, y = self.arm.end_effector(positions)
         self.x_target.setValue(float(x))
         self.y_target.setValue(float(y))
@@ -841,19 +1030,40 @@ class ArmWindow(QtWidgets.QMainWindow):
         self._notify("Sent joint target")
 
     def _set_joint_targets_to_current(self):
-        positions, _ = self.node.snapshot()
+        positions, _, _ = self.node.snapshot()
         for row, position in zip(self.joint_rows, positions):
             row.set_value_deg(math.degrees(position))
 
     def _send_xy_increment(self, dx: float, dy: float):
-        positions, _ = self.node.snapshot()
+        positions, _, _ = self.node.snapshot()
         x, y = self.arm.end_effector(positions)
         self.node.publish_xy_target(x + dx, y + dy)
 
     def _send_joint_increment(self, joint_index: int, delta: float):
-        positions, _ = self.node.snapshot()
+        positions, _, _ = self.node.snapshot()
         positions[joint_index] += delta
         self.node.publish_joint_target(positions)
+
+    def _start_pick_place(self, action: str) -> None:
+        pick_xy = (self.pick_x.value(), self.pick_y.value())
+        place_xy = (self.place_x.value(), self.place_y.value())
+        self.node.start_pick_place(
+            action,
+            pick_xy,
+            place_xy,
+            lambda message: self.operation_result.emit(message),
+        )
+
+    def _command_gripper(self, opened: bool) -> None:
+        if self.node.command_gripper(opened):
+            self._notify(
+                "Gripper opening" if opened else "Gripper closing"
+            )
+        else:
+            self._notify("Gripper controller is not available")
+
+    def _on_operation_result(self, message: str) -> None:
+        self._notify(message)
 
     def keyPressEvent(self, event: QtGui.QKeyEvent):
         """Map keyboard jog keys to XY or individual-joint target updates."""
@@ -896,8 +1106,9 @@ class ArmWindow(QtWidgets.QMainWindow):
 
     # ---- periodic refresh ----------------------------------------------
     def _refresh(self):
-        positions, status = self.node.snapshot()
+        positions, status, pick_place_status = self.node.snapshot()
         age = self.node.telemetry_age()
+        self.pick_place_status_label.setText(pick_place_status)
 
         # Seed the joint target fields once, from the first real state.
         if age is not None and not self._joint_fields_seeded:

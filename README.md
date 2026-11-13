@@ -60,37 +60,48 @@ ros2 launch planar_arm_control simulation.launch.py
 This opens Gazebo and the teleoperation GUI. The simulation launch spawns the
 arm, starts the joint-state broadcaster and trajectory controller, and sends
 the planner's joint setpoints to Gazebo through `ros2_control`. Use the GUI's
-XY or joint target controls to move the arm. Set `gui:=false` for a simulator-
-only run; set `gazebo_gui:=false` to run the Gazebo server headlessly.
+XY, joint, or Pick & Place controls to move the arm. Gazebo initializes the arm
+at its compact home pose (joint1 75°, joint2 99°, joint3 0°), so it starts
+clear of the pick table rather than sweeping there from a straight pose. The
+Pick & Place tab lets you set planar pick/place coordinates and command the
+gripper. Set `gui:=false` for a simulator-only run; set `gazebo_gui:=false` to
+run the Gazebo server headlessly.
 
-The Gazebo world includes pick and place tables and a visible item. After
-`ros2 control list_controllers` shows both controllers as `active`, pick the
-item from another sourced terminal:
+The URDF includes a two-finger gripper driven by its own joint trajectory
+controller (the same plugin used by the arm). Pick/place closes the fingers
+at the selected pick point,
+lifts the colliding object using Gazebo physics, and opens the gripper at the
+selected destination; it no longer teleports or visually attaches the item.
+The object must be a collidable Gazebo model positioned at the selected pick
+coordinates and small enough to fit between the fingers. The demo world
+contains a suitable item on the pick table. After
+`ros2 control list_controllers` shows both trajectory controllers and the joint-state
+controllers as `active`, the default pick can be started from another sourced
+terminal:
 
 ```bash
 ros2 service call /pick_place/pick std_srvs/srv/Trigger "{}"
 ```
 
-The arm approaches and picks at `(4.0, 2.0)`, then visibly lifts the item
-before waiting with it held. Call the place service when ready:
+The arm approaches and grips at `(4.0, 1.95)`, the center of the settled item
+on the pick table, then lifts it. Call the
+place service to carry it to `(-3.0, 3.0)` and release it:
 
 ```bash
 ros2 service call /pick_place/place std_srvs/srv/Trigger "{}"
 ```
 
-The second call carries the item to `(-3.0, 3.0)` and places it. Coordinates
-are planar relative to `base_link`; planner Y maps to Gazebo Z. The current
-model has no physical gripper, so the demo simulates a grasp by continuously
-following the tool pose while held. The item is dynamic and collidable; after
-release it falls onto the table at its current position. To release it where
-the arm currently is without moving to the configured place point, call:
+Coordinates are planar relative to `base_link`; planner Y maps to Gazebo Z.
+Choose other pick/place points in the GUI or update the node's `pick_x`,
+`pick_y`, `place_x`, and `place_y` parameters before calling the services.
+To open the gripper and release an item at the arm's current position, call:
 
 ```bash
 ros2 service call /pick_place/release std_srvs/srv/Trigger "{}"
 ```
 
-Follow progress on `/pick_place/status`; the pick operation completes with
-`Item lifted and picked; ready for place`.
+Follow progress on `/pick_place/status`. The GUI also provides manual
+open/close gripper buttons for positioning an object or recovering a task.
 
 The GUI's XY and joint controls publish targets to the controller. Start RViz
 manually in another terminal if you want to view the robot model:
@@ -137,7 +148,7 @@ Example Cartesian command:
 
 ```bash
 ros2 topic pub --once /target_pose geometry_msgs/msg/PointStamped \
-  "{header: {frame_id: base_link}, point: {x: 4.0, y: 0.0, z: 2.0}}"
+  "{header: {frame_id: base_link},   point: {x: 4.0, y: 0.0, z: 1.95}}"
 ```
 
 The controller uses a quintic time scaling with zero endpoint velocity and
