@@ -34,18 +34,11 @@ This package provides a complete ROS 2 Jazzy stack for a 3-DoF planar arm: a tra
 
 <div align="center">
 
-
+https://github.com/user-attachments/assets/b23d02e2-f38e-486f-8414-84d4dff2dabf
 
 <sub>Demo: the arm performing a full pick and place cycle in Gazebo Harmonic.</sub>
 
 </div>
-
-Suggested clips to record for the demo:
-
-1. Gazebo and the teleoperation GUI launching side by side
-2. XY and joint-space jogging with the live plot
-3. A complete pick and place sequence on the demo table
-4. Live PID tuning with the tracking-error plot
 
 ---
 
@@ -265,6 +258,14 @@ The following are ROS parameters:
 The GUI plots joint tracking error and reports measured control-timer jitter.
 
 `bringup.launch.py` uses the `simulated` position backend; `simulation.launch.py` uses `ros2_control` and supports the three command modes. The planner depends on the small `JointCommandBackend` boundary, so a hardware adapter can replace the backend without changing IK, trajectory timing, or constraint validation.
+
+---
+User Interface
+<div align="center"> <img width="1366" height="853" alt="ui" src="https://github.com/user-attachments/assets/a90767c6-eac5-4232-b36e-17ba6b25b8e1" />
+
+<sub>Teleoperation GUI: live arm plot, XY and joint controls, Pick & Place tab, and tracking-error plot.</sub>
+
+</div>
 
 ---
 
