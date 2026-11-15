@@ -9,11 +9,12 @@ import time
 import rclpy
 from geometry_msgs.msg import PointStamped
 from rclpy.parameter import Parameter
+from rclpy.parameter import parameter_value_to_python
 from rclpy.parameter_client import AsyncParameterClient
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Float64MultiArray, String
+from std_msgs.msg import Float64, Float64MultiArray, Int32, String
 from std_srvs.srv import Trigger
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
@@ -28,6 +29,13 @@ JOINT_COLORS = ["#4da6ff", "#ffb454", "#7ee787"]
 STALE_AFTER_S = 1.0
 HISTORY_LEN = 400
 
+# Control-loop timing quality (milliseconds of timer jitter). These drive the
+# Stable / Degraded / Unstable badge; tune them for your machine.
+JITTER_STABLE_MEAN_MS = 10.0
+JITTER_STABLE_PEAK_MS = 30.0
+JITTER_DEGRADED_MEAN_MS = 20.0
+JITTER_DEGRADED_PEAK_MS = 60.0
+
 # ----------------------------------------------------------------- theme --
 COLORS = {
     "bg": "#0d1117",
@@ -41,6 +49,7 @@ COLORS = {
     "ok": "#3fb950",
     "warn": "#d29922",
     "bad": "#f85149",
+    "bad_hover": "#ff6b63",
 }
 
 STYLESHEET = f"""
@@ -87,10 +96,9 @@ QTabWidget::pane {{
 QTabBar::tab {{
     background: transparent;
     color: {COLORS['muted']};
-    padding: 8px 18px;
+    padding: 8px 20px;
     border: none;
     border-bottom: 2px solid transparent;
-    font-weight: 600;
 }}
 QTabBar::tab:selected {{
     color: {COLORS['text']};
@@ -147,6 +155,37 @@ QStatusBar {{
     color: {COLORS['muted']};
 }}
 QStatusBar::item {{ border: none; }}
+QPushButton#danger {{
+    background: {COLORS['bad']};
+    border: 1px solid {COLORS['bad']};
+    color: white;
+    font-weight: 700;
+}}
+QPushButton#danger:hover {{
+    background: {COLORS['bad_hover']};
+    border-color: {COLORS['bad_hover']};
+}}
+QLabel#metricValueSmall {{
+    font-family: "Consolas", "JetBrains Mono", "Menlo", monospace;
+    font-size: 15px;
+    font-weight: 600;
+}}
+QLabel#speedValue {{
+    font-family: "Consolas", "JetBrains Mono", "Menlo", monospace;
+    font-weight: 700;
+    color: {COLORS['accent']};
+    background: {COLORS['panel_alt']};
+    border: 1px solid {COLORS['border']};
+    border-radius: 10px;
+    padding: 2px 10px;
+}}
+QFrame#subCard {{
+    background: {COLORS['panel_alt']};
+    border: 1px solid {COLORS['border']};
+    border-radius: 6px;
+}}
+QScrollArea {{ background: transparent; border: none; }}
+QScrollArea > QWidget > QWidget {{ background: transparent; }}
 QToolTip {{
     background: {COLORS['panel_alt']};
     color: {COLORS['text']};
@@ -194,6 +233,10 @@ class GuiNode(Node):
         ]
         self._status = "Waiting for controller"
         self._pick_place_status = "Pick/place: waiting for node"
+        self._controller_error = [0.0, 0.0, 0.0]
+        self._controller_timing = [0.0, 0.0, 0.0]
+        self._speed_scale = 1.0
+        self._last_error_time = None
         self._last_state_time = None
         self._joint_target_publisher = self.create_publisher(
             Float64MultiArray, "/joint_target", 10
@@ -209,11 +252,23 @@ class GuiNode(Node):
         self._pick_place_parameters = AsyncParameterClient(
             self, "/pick_place_node"
         )
+        self._controller_parameters = AsyncParameterClient(
+            self, "/controller_node"
+        )
         self._pick_client = self.create_client(
             Trigger, "/pick_place/pick"
         )
         self._place_client = self.create_client(
             Trigger, "/pick_place/place"
+        )
+        self._cancel_client = self.create_client(
+            Trigger, "/controller/cancel"
+        )
+        self._pick_place_cancel_client = self.create_client(
+            Trigger, "/pick_place/cancel"
+        )
+        self._speed_adjust_publisher = self.create_publisher(
+            Int32, "/controller/speed_adjust", 10
         )
         self.create_subscription(
             JointState, "/joint_states", self._on_joint_state, 10
@@ -223,6 +278,17 @@ class GuiNode(Node):
         )
         self.create_subscription(
             String, "/pick_place/status", self._on_pick_place_status, 10
+        )
+        self.create_subscription(
+            Float64MultiArray, "/controller_error", self._on_controller_error,
+            10,
+        )
+        self.create_subscription(
+            Float64MultiArray, "/controller_timing", self._on_controller_timing,
+            10,
+        )
+        self.create_subscription(
+            Float64, "/controller_speed_scale", self._on_speed_scale, 10
         )
 
     def _on_joint_state(self, message: JointState) -> None:
@@ -244,6 +310,29 @@ class GuiNode(Node):
         with self._state_lock:
             self._pick_place_status = message.data
 
+    def _on_controller_error(self, message: Float64MultiArray) -> None:
+        if len(message.data) != len(JOINT_NAMES) or not all(
+            math.isfinite(value) for value in message.data
+        ):
+            return
+        with self._state_lock:
+            self._controller_error = list(message.data)
+            self._last_error_time = time.monotonic()
+
+    def _on_controller_timing(self, message: Float64MultiArray) -> None:
+        if len(message.data) != 3 or not all(
+            math.isfinite(value) for value in message.data
+        ):
+            return
+        with self._state_lock:
+            self._controller_timing = list(message.data)
+
+    def _on_speed_scale(self, message: Float64) -> None:
+        if not math.isfinite(message.data):
+            return
+        with self._state_lock:
+            self._speed_scale = message.data
+
     def snapshot(self):
         """Return the latest positions and controller status consistently."""
         with self._state_lock:
@@ -259,6 +348,82 @@ class GuiNode(Node):
             if self._last_state_time is None:
                 return None
             return time.monotonic() - self._last_state_time
+
+    def control_telemetry(self):
+        """Return tracking error, timer jitter, and error-sample time."""
+        with self._state_lock:
+            return (
+                list(self._controller_error),
+                list(self._controller_timing),
+                self._last_error_time,
+                self._speed_scale,
+            )
+
+    def adjust_speed(self, direction: int) -> None:
+        """Request one bounded speed-step change from the controller."""
+        if direction not in (-1, 1):
+            raise ValueError("speed direction must be -1 or +1")
+        self._speed_adjust_publisher.publish(Int32(data=direction))
+
+    def get_pid_gains(self, callback) -> None:
+        """Read current PID and velocity tracking gains from the controller."""
+        if not self._controller_parameters.services_are_ready():
+            callback(None, "Controller parameter service is not ready")
+            return
+        future = self._controller_parameters.get_parameters(
+            [
+                "effort_pid_kp",
+                "effort_pid_ki",
+                "effort_pid_kd",
+                "velocity_tracking_kp",
+            ]
+        )
+
+        def on_result(result):
+            try:
+                values = [
+                    float(parameter_value_to_python(value))
+                    for value in result.result().values
+                ]
+            except Exception as error:
+                callback(None, f"Could not read controller gains: {error}")
+                return
+            callback(values, None)
+
+        future.add_done_callback(on_result)
+
+    def set_pid_gains(
+        self, kp: float, ki: float, kd: float, velocity_kp: float, callback
+    ) -> None:
+        """Apply validated effort PID and velocity tracking gains."""
+        if not self._controller_parameters.services_are_ready():
+            callback("Controller parameter service is not ready")
+            return
+        parameters = [
+            Parameter("effort_pid_kp", value=float(kp)),
+            Parameter("effort_pid_ki", value=float(ki)),
+            Parameter("effort_pid_kd", value=float(kd)),
+            Parameter("velocity_tracking_kp", value=float(velocity_kp)),
+        ]
+        future = self._controller_parameters.set_parameters(parameters)
+
+        def on_result(result):
+            try:
+                response = result.result()
+            except Exception as error:
+                callback(f"Could not update controller gains: {error}")
+                return
+            rejected = [
+                item.reason for item in response.results
+                if not item.successful
+            ]
+            callback(
+                f"Gain update rejected: {'; '.join(rejected)}"
+                if rejected
+                else "Controller gains updated"
+            )
+
+        future.add_done_callback(on_result)
 
     def publish_xy_target(self, x: float, y: float) -> None:
         """Publish a planar target, mapping planner Y to robot-frame Z."""
@@ -325,6 +490,63 @@ class GuiNode(Node):
             )
         )
 
+    def cancel_motion(self, callback) -> None:
+        """Cancel an active task and stop the controller's current motion."""
+        primary_client = (
+            self._pick_place_cancel_client
+            if self._pick_place_cancel_client.service_is_ready()
+            else self._cancel_client
+        )
+        fallback_client = (
+            self._cancel_client
+            if primary_client is self._pick_place_cancel_client
+            else None
+        )
+        if not primary_client.service_is_ready():
+            callback("Controller cancel service is not ready")
+            return
+        future = primary_client.call_async(Trigger.Request())
+        future.add_done_callback(
+            lambda result: self._on_cancel_result(
+                result, fallback_client, callback
+            )
+        )
+
+    def _on_cancel_result(self, future, fallback_client, callback) -> None:
+        try:
+            response = future.result()
+        except Exception as error:
+            if (
+                fallback_client is not None
+                and fallback_client.service_is_ready()
+            ):
+                retry = fallback_client.call_async(Trigger.Request())
+                retry.add_done_callback(
+                    lambda result: self._on_cancel_result(
+                        result, None, callback
+                    )
+                )
+                return
+            callback(f"Cancel request failed: {error}")
+            return
+        if (
+            not response.success
+            and fallback_client is not None
+            and fallback_client.service_is_ready()
+        ):
+            retry = fallback_client.call_async(Trigger.Request())
+            retry.add_done_callback(
+                lambda result: self._on_cancel_result(
+                    result, None, callback
+                )
+            )
+            return
+        callback(
+            response.message
+            if response.success
+            else f"Cancel rejected: {response.message}"
+        )
+
     @staticmethod
     def _on_task_parameters_set(future, client, action, callback) -> None:
         try:
@@ -372,8 +594,181 @@ def make_card(title: str):
     outer.setSpacing(10)
     label = QtWidgets.QLabel(title.upper())
     label.setObjectName("cardTitle")
+    font = label.font()
+    font.setLetterSpacing(QtGui.QFont.AbsoluteSpacing, 1.0)
+    label.setFont(font)
     outer.addWidget(label)
     return frame, outer
+
+
+def polish_tabs(tabs: QtWidgets.QTabWidget) -> None:
+    """Size tabs from a bold font so labels are never clipped or elided."""
+    bar = tabs.tabBar()
+    font = bar.font()
+    font.setBold(True)
+    bar.setFont(font)
+    bar.setElideMode(QtCore.Qt.ElideNone)
+    bar.setUsesScrollButtons(False)
+    bar.setExpanding(False)
+    bar.setDrawBase(False)
+
+
+def scroll_page(page: QtWidgets.QWidget) -> QtWidgets.QScrollArea:
+    """Wrap a tab page so tall content scrolls instead of squeezing."""
+    area = QtWidgets.QScrollArea()
+    area.setWidgetResizable(True)
+    area.setFrameShape(QtWidgets.QFrame.NoFrame)
+    area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+    area.setWidget(page)
+    return area
+
+
+def classify_jitter(mean_ms: float, peak_ms: float):
+    """Return (label, colour) describing control-loop timing quality."""
+    if (
+        mean_ms <= JITTER_STABLE_MEAN_MS
+        and peak_ms <= JITTER_STABLE_PEAK_MS
+    ):
+        return "Stable", COLORS["ok"]
+    if (
+        mean_ms <= JITTER_DEGRADED_MEAN_MS
+        and peak_ms <= JITTER_DEGRADED_PEAK_MS
+    ):
+        return "Degraded", COLORS["warn"]
+    return "Unstable", COLORS["bad"]
+
+
+class JitterGauge(QtWidgets.QWidget):
+    """Bar of the worst delay over green / amber / red zones; dot = average."""
+
+    def __init__(self):
+        super().__init__()
+        self.setMinimumSize(140, 28)
+        self._mean_ms = 0.0
+        self._peak_ms = 0.0
+        self._scale_ms = JITTER_DEGRADED_PEAK_MS * 1.5
+
+    def set_values(self, mean_ms: float, peak_ms: float) -> None:
+        """Update the displayed average and worst delay in milliseconds."""
+        self._mean_ms = max(0.0, mean_ms)
+        self._peak_ms = max(0.0, peak_ms)
+        self.update()
+
+    def _x(self, milliseconds: float) -> float:
+        fraction = min(1.0, max(0.0, milliseconds / self._scale_ms))
+        return fraction * self.width()
+
+    def paintEvent(self, _event):
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        top, height = 2.0, 8.0
+        painter.setPen(QtCore.Qt.NoPen)
+        zones = (
+            (0.0, JITTER_STABLE_PEAK_MS, COLORS["ok"]),
+            (JITTER_STABLE_PEAK_MS, JITTER_DEGRADED_PEAK_MS, COLORS["warn"]),
+            (JITTER_DEGRADED_PEAK_MS, self._scale_ms, COLORS["bad"]),
+        )
+        for start, end, colour in zones:
+            zone = QtGui.QColor(colour)
+            zone.setAlpha(60)
+            painter.setBrush(zone)
+            painter.drawRect(
+                QtCore.QRectF(
+                    self._x(start), top,
+                    self._x(end) - self._x(start), height,
+                )
+            )
+        if self._peak_ms > 0.0:
+            _label, colour = classify_jitter(self._mean_ms, self._peak_ms)
+            painter.setBrush(QtGui.QColor(colour))
+            painter.drawRect(
+                QtCore.QRectF(0.0, top, max(2.0, self._x(self._peak_ms)), height)
+            )
+            painter.setBrush(QtGui.QColor(COLORS["text"]))
+            painter.drawEllipse(
+                QtCore.QPointF(self._x(self._mean_ms), top + height / 2.0),
+                4.0, 4.0,
+            )
+        font = QtGui.QFont(self.font())
+        font.setPixelSize(10)
+        painter.setFont(font)
+        painter.setPen(QtGui.QColor(COLORS["muted"]))
+        label_top = top + height + 3.0
+        painter.drawText(
+            QtCore.QRectF(0.0, label_top, 44.0, 14.0),
+            QtCore.Qt.AlignLeft, "0",
+        )
+        for milliseconds in (JITTER_STABLE_PEAK_MS, JITTER_DEGRADED_PEAK_MS):
+            painter.drawText(
+                QtCore.QRectF(self._x(milliseconds) - 22.0, label_top, 44.0, 14.0),
+                QtCore.Qt.AlignHCenter, f"{milliseconds:.0f}",
+            )
+        painter.drawText(
+            QtCore.QRectF(self.width() - 44.0, label_top, 44.0, 14.0),
+            QtCore.Qt.AlignRight, "ms",
+        )
+
+
+class ControlHealthStrip(QtWidgets.QFrame):
+    """Plain-language summary of control-loop timing instead of raw numbers."""
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("subCard")
+        self.setToolTip(
+            "Control-loop timing: how far the controller's timer drifts from "
+            "its schedule. Smaller delays mean smoother, more repeatable "
+            "motion.\n"
+            f"Stable: average up to {JITTER_STABLE_MEAN_MS:.0f} ms and worst "
+            f"up to {JITTER_STABLE_PEAK_MS:.0f} ms.\n"
+            f"Degraded: average up to {JITTER_DEGRADED_MEAN_MS:.0f} ms and "
+            f"worst up to {JITTER_DEGRADED_PEAK_MS:.0f} ms."
+        )
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(18)
+
+        heading = QtWidgets.QVBoxLayout()
+        heading.setSpacing(2)
+        name = QtWidgets.QLabel("Control loop timing")
+        name.setObjectName("metricName")
+        self.badge = StatusPill("Waiting for data")
+        heading.addWidget(name)
+        heading.addWidget(self.badge)
+        layout.addLayout(heading)
+
+        self.latest = MetricTile("Latest delay", compact=True)
+        self.average = MetricTile("Average delay", compact=True)
+        self.worst = MetricTile("Worst delay", compact=True)
+        for tile in (self.latest, self.average, self.worst):
+            layout.addWidget(tile)
+
+        gauge_box = QtWidgets.QVBoxLayout()
+        gauge_box.setSpacing(2)
+        self.gauge = JitterGauge()
+        caption = QtWidgets.QLabel("Bar: worst delay  ·  Dot: average")
+        caption.setObjectName("metricName")
+        gauge_box.addWidget(self.gauge)
+        gauge_box.addWidget(caption)
+        layout.addLayout(gauge_box, 1)
+
+    def update_timing(self, timing_s) -> None:
+        """Show last / mean / max timer jitter (seconds) as a health summary."""
+        if not any(timing_s):
+            self.badge.set_state("Waiting for data", COLORS["muted"])
+            for tile in (self.latest, self.average, self.worst):
+                tile.set_value("--")
+            self.gauge.set_values(0.0, 0.0)
+            return
+        last_ms = abs(timing_s[0]) * 1000.0
+        mean_ms = timing_s[1] * 1000.0
+        peak_ms = timing_s[2] * 1000.0
+        label, colour = classify_jitter(mean_ms, peak_ms)
+        self.badge.set_state(label, colour)
+        self.latest.set_value(f"{last_ms:.1f} ms")
+        self.average.set_value(f"{mean_ms:.1f} ms")
+        self.worst.set_value(f"{peak_ms:.1f} ms")
+        self.gauge.set_values(mean_ms, peak_ms)
 
 
 class StatusPill(QtWidgets.QLabel):
@@ -397,7 +792,7 @@ class StatusPill(QtWidgets.QLabel):
 class MetricTile(QtWidgets.QWidget):
     """Small name/value readout used for live numbers."""
 
-    def __init__(self, name: str, accent: str = None):
+    def __init__(self, name: str, accent: str = None, compact: bool = False):
         super().__init__()
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -405,7 +800,9 @@ class MetricTile(QtWidgets.QWidget):
         self._name = QtWidgets.QLabel(name)
         self._name.setObjectName("metricName")
         self._value = QtWidgets.QLabel("--")
-        self._value.setObjectName("metricValue")
+        self._value.setObjectName(
+            "metricValueSmall" if compact else "metricValue"
+        )
         if accent:
             self._value.setStyleSheet(f"color: {accent};")
         layout.addWidget(self._name)
@@ -445,6 +842,7 @@ class JointRow(QtWidgets.QWidget):
         self.spin.setSingleStep(1.0)
         self.spin.setSuffix("°")
         self.spin.setFixedWidth(92)
+        self.spin.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
 
         layout.addWidget(name, 0, 0)
         layout.addWidget(self.actual, 0, 1, 1, 2)
@@ -490,6 +888,7 @@ class ArmWindow(QtWidgets.QMainWindow):
     """Operator console: workspace view, controls, and live telemetry."""
 
     operation_result = QtCore.pyqtSignal(str)
+    pid_values_received = QtCore.pyqtSignal(object, object)
 
     def __init__(self, node: GuiNode):
         """Build the console around a ROS node."""
@@ -554,7 +953,11 @@ class ArmWindow(QtWidgets.QMainWindow):
         self._joint_fields_seeded = False
         self._last_logged_telemetry_state = None
         self._last_logged_controller_error = None
+        self._error_history_times = deque(maxlen=HISTORY_LEN)
+        self._history_errors = [deque(maxlen=HISTORY_LEN) for _ in range(3)]
+        self._last_error_sample_time = None
         self.operation_result.connect(self._on_operation_result)
+        self.pid_values_received.connect(self._on_pid_values_received)
 
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self._refresh)
@@ -573,9 +976,10 @@ class ArmWindow(QtWidgets.QMainWindow):
         title = QtWidgets.QLabel("Planar Arm Console")
         title.setObjectName("title")
         subtitle = QtWidgets.QLabel(
-            "3-DOF teleoperation  ·  /joint_target  ·  /target_pose"
+            "3-DOF planar arm  ·  teleoperation and live telemetry"
         )
         subtitle.setObjectName("subtitle")
+        title.setToolTip("Publishes /joint_target and /target_pose")
         titles.addStretch(1)
         titles.addWidget(title)
         titles.addWidget(subtitle)
@@ -645,6 +1049,7 @@ class ArmWindow(QtWidgets.QMainWindow):
 
     def _build_telemetry_card(self) -> QtWidgets.QWidget:
         card, layout = make_card("Joint telemetry")
+        self.telemetry_tabs = QtWidgets.QTabWidget()
         self.plot = pg.PlotWidget()
         self.plot.showGrid(x=True, y=True, alpha=0.18)
         self.plot.setLabel("bottom", "Time", units="s")
@@ -659,7 +1064,27 @@ class ArmWindow(QtWidgets.QMainWindow):
             )
             for i in range(3)
         ]
-        layout.addWidget(self.plot, 1)
+        self.telemetry_tabs.addTab(self.plot, "Joint positions")
+
+        self.error_plot = pg.PlotWidget()
+        self.error_plot.showGrid(x=True, y=True, alpha=0.18)
+        self.error_plot.setLabel("bottom", "Time", units="s")
+        self.error_plot.setLabel("left", "Tracking error", units="°")
+        self.error_plot.setMenuEnabled(False)
+        self.error_plot.addLegend(offset=(10, 10))
+        self.error_curves = [
+            self.error_plot.plot(
+                [], [],
+                pen=pg.mkPen(JOINT_COLORS[i], width=2),
+                name=f"Joint {i + 1}",
+            )
+            for i in range(3)
+        ]
+        self.telemetry_tabs.addTab(self.error_plot, "Tracking error")
+        polish_tabs(self.telemetry_tabs)
+        self.health_strip = ControlHealthStrip()
+        layout.addWidget(self.health_strip)
+        layout.addWidget(self.telemetry_tabs, 1)
         return card
 
     def _build_control_panel(self) -> QtWidgets.QWidget:
@@ -695,12 +1120,41 @@ class ArmWindow(QtWidgets.QMainWindow):
         readout_layout.addLayout(tiles)
         upper_layout.addWidget(readout)
 
+        motion, motion_layout = make_card("Motion control")
+        speed_row = QtWidgets.QHBoxLayout()
+        speed_row.setSpacing(8)
+        speed_row.addWidget(QtWidgets.QLabel("Movement speed"))
+        self.speed_scale_label = QtWidgets.QLabel("100%")
+        self.speed_scale_label.setObjectName("speedValue")
+        speed_row.addWidget(self.speed_scale_label)
+        speed_row.addStretch(1)
+        self.speed_down_button = QtWidgets.QPushButton("− Slower")
+        self.speed_up_button = QtWidgets.QPushButton("+ Faster")
+        self.speed_down_button.clicked.connect(
+            lambda: self._adjust_speed(-1)
+        )
+        self.speed_up_button.clicked.connect(
+            lambda: self._adjust_speed(1)
+        )
+        speed_row.addWidget(self.speed_down_button)
+        speed_row.addWidget(self.speed_up_button)
+        motion_layout.addLayout(speed_row)
+
+        self.cancel_button = QtWidgets.QPushButton("Cancel movement")
+        self.cancel_button.setObjectName("danger")
+        self.cancel_button.clicked.connect(self._cancel_motion)
+        motion_layout.addWidget(self.cancel_button)
+        upper_layout.addWidget(motion)
+
         # Tabs
         tabs = QtWidgets.QTabWidget()
-        tabs.addTab(self._build_cartesian_tab(), "Cartesian")
-        tabs.addTab(self._build_joint_tab(), "Joints")
-        tabs.addTab(self._build_jog_tab(), "Jog")
-        tabs.addTab(self._build_pick_place_tab(), "Pick & Place")
+        tabs.addTab(scroll_page(self._build_cartesian_tab()), "Cartesian")
+        tabs.addTab(scroll_page(self._build_joint_tab()), "Joints")
+        tabs.addTab(scroll_page(self._build_jog_tab()), "Jog")
+        # "&&" because a single "&" is a keyboard-mnemonic marker in Qt.
+        tabs.addTab(scroll_page(self._build_pick_place_tab()), "Pick && Place")
+        tabs.addTab(scroll_page(self._build_tuning_tab()), "PID tuning")
+        polish_tabs(tabs)
         upper_layout.addWidget(tabs, 1)
 
         # Scrollable logs panel below the tabs
@@ -756,7 +1210,8 @@ class ArmWindow(QtWidgets.QMainWindow):
         layout.setSpacing(12)
         hint = QtWidgets.QLabel(
             "Frame: base_link (planner Y is published as Z). "
-            "Click the workspace plot to fill the target."
+            "Click the workspace plot to fill the target. Sending a new "
+            "target while moving replans from current feedback."
         )
         hint.setObjectName("hint")
         hint.setWordWrap(True)
@@ -784,6 +1239,68 @@ class ArmWindow(QtWidgets.QMainWindow):
         layout.addLayout(buttons)
         layout.addStretch(1)
         return page
+
+    def _build_tuning_tab(self) -> QtWidgets.QWidget:
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        hint = QtWidgets.QLabel(
+            "Tune effort-mode PID and velocity-mode proportional gain. "
+            "Apply changes live while monitoring the tracking-error plot; "
+            "gain updates reset the integral accumulator."
+        )
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        form = QtWidgets.QFormLayout()
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(8)
+        self.pid_kp = self._gain_box(500.0, 50.0)
+        self.pid_ki = self._gain_box(100.0, 0.0)
+        self.pid_kd = self._gain_box(100.0, 5.0)
+        self.velocity_kp = self._gain_box(100.0, 4.0)
+        form.addRow("Effort Kp", self.pid_kp)
+        form.addRow("Effort Ki", self.pid_ki)
+        form.addRow("Effort Kd", self.pid_kd)
+        form.addRow("Velocity Kp", self.velocity_kp)
+        layout.addLayout(form)
+
+        feedback = QtWidgets.QFrame()
+        feedback.setObjectName("subCard")
+        feedback_layout = QtWidgets.QHBoxLayout(feedback)
+        feedback_layout.setContentsMargins(12, 8, 12, 8)
+        self.pid_feedback_tile = MetricTile(
+            "Feedback RMS error", compact=True
+        )
+        feedback_layout.addWidget(self.pid_feedback_tile)
+        feedback_layout.addStretch(1)
+        layout.addWidget(feedback)
+
+        gain_buttons = QtWidgets.QHBoxLayout()
+        read_button = QtWidgets.QPushButton("Read current gains")
+        read_button.clicked.connect(self._read_pid_gains)
+        gain_buttons.addWidget(read_button)
+        apply_button = QtWidgets.QPushButton("Apply gains")
+        apply_button.setObjectName("primary")
+        apply_button.clicked.connect(self._apply_pid_gains)
+        gain_buttons.addWidget(apply_button)
+        layout.addLayout(gain_buttons)
+        layout.addStretch(1)
+        self._read_pid_gains()
+        return page
+
+    @staticmethod
+    def _gain_box(maximum: float, default: float):
+        box = QtWidgets.QDoubleSpinBox()
+        box.setRange(0.0, maximum)
+        box.setDecimals(2)
+        box.setSingleStep(1.0)
+        box.setValue(default)
+        box.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
+        return box
 
     def _build_joint_tab(self) -> QtWidgets.QWidget:
         page = QtWidgets.QWidget()
@@ -965,6 +1482,7 @@ class ArmWindow(QtWidgets.QMainWindow):
         box.setDecimals(3)
         box.setSingleStep(0.1)
         box.setSuffix(" m")
+        box.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
         return box
 
     # ---- actions --------------------------------------------------------
@@ -1065,6 +1583,42 @@ class ArmWindow(QtWidgets.QMainWindow):
     def _on_operation_result(self, message: str) -> None:
         self._notify(message)
 
+    def _adjust_speed(self, direction: int) -> None:
+        self.node.adjust_speed(direction)
+        self._notify("Movement speed adjustment requested")
+
+    def _read_pid_gains(self) -> None:
+        self.node.get_pid_gains(
+            lambda values, error: self.pid_values_received.emit(
+                values, error
+            )
+        )
+
+    def _on_pid_values_received(self, values, error) -> None:
+        if error:
+            self._notify(error)
+            return
+        for box, value in zip(
+            (self.pid_kp, self.pid_ki, self.pid_kd, self.velocity_kp),
+            values,
+        ):
+            box.setValue(value)
+        self._notify("Loaded controller gains")
+
+    def _apply_pid_gains(self) -> None:
+        self.node.set_pid_gains(
+            self.pid_kp.value(),
+            self.pid_ki.value(),
+            self.pid_kd.value(),
+            self.velocity_kp.value(),
+            lambda message: self.operation_result.emit(message),
+        )
+
+    def _cancel_motion(self) -> None:
+        self.node.cancel_motion(
+            lambda message: self.operation_result.emit(message)
+        )
+
     def keyPressEvent(self, event: QtGui.QKeyEvent):
         """Map keyboard jog keys to XY or individual-joint target updates."""
         if isinstance(
@@ -1155,6 +1709,39 @@ class ArmWindow(QtWidgets.QMainWindow):
             for curve, history in zip(self.joint_curves, self._history_positions):
                 curve.setData(times, list(history))
             self.plot.setXRange(max(0.0, elapsed - 40.0), max(elapsed, 5.0))
+            errors, timing, error_time, speed_scale = (
+                self.node.control_telemetry()
+            )
+            if (
+                error_time is not None
+                and error_time != self._last_error_sample_time
+            ):
+                sample_time = max(0.0, error_time - self._started_at)
+                self._error_history_times.append(sample_time)
+                for history, error in zip(self._history_errors, errors):
+                    history.append(math.degrees(error))
+                self._last_error_sample_time = error_time
+            error_times = list(self._error_history_times)
+            for curve, history in zip(
+                self.error_curves, self._history_errors
+            ):
+                curve.setData(error_times, list(history))
+            self.error_plot.setXRange(
+                max(0.0, elapsed - 40.0), max(elapsed, 5.0)
+            )
+            self.health_strip.update_timing(timing)
+            self.speed_scale_label.setText(
+                f"{speed_scale * 100:.0f}%"
+            )
+            if error_time is None:
+                self.pid_feedback_tile.set_value("--")
+            else:
+                rms_error = math.sqrt(
+                    sum(error * error for error in errors) / len(errors)
+                )
+                self.pid_feedback_tile.set_value(
+                    f"{math.degrees(rms_error):.2f}°"
+                )
             self._last_plot_update = now
 
     def _update_status(self, status: str, age) -> None:

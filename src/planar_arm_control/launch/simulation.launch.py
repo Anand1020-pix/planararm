@@ -14,6 +14,7 @@ from launch.substitutions import (
     Command,
     LaunchConfiguration,
     PathJoinSubstitution,
+    PythonExpression,
 )
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -43,6 +44,8 @@ def generate_launch_description():
         controller_config,
     ]), value_type=str)
     use_sim_time = LaunchConfiguration("use_sim_time")
+    command_mode = LaunchConfiguration("command_mode")
+    autostart = LaunchConfiguration("autostart")
 
     gazebo_gui = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(gazebo_launch_file),
@@ -80,7 +83,7 @@ def generate_launch_description():
         ],
         output="screen",
     )
-    spawn_trajectory_controller = Node(
+    spawn_position_controller = Node(
         package="controller_manager",
         executable="spawner",
         arguments=[
@@ -89,6 +92,35 @@ def generate_launch_description():
             "--controller-manager-timeout", "120",
         ],
         output="screen",
+        condition=IfCondition(
+            PythonExpression(["'", command_mode, "' == 'position'"])
+        ),
+    )
+    spawn_velocity_controller = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=[
+            "joint_velocity_controller",
+            "--controller-manager", "/controller_manager",
+            "--controller-manager-timeout", "120",
+        ],
+        output="screen",
+        condition=IfCondition(
+            PythonExpression(["'", command_mode, "' == 'velocity'"])
+        ),
+    )
+    spawn_effort_controller = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=[
+            "joint_effort_controller",
+            "--controller-manager", "/controller_manager",
+            "--controller-manager-timeout", "120",
+        ],
+        output="screen",
+        condition=IfCondition(
+            PythonExpression(["'", command_mode, "' == 'effort'"])
+        ),
     )
     spawn_gripper_controller = Node(
         package="controller_manager",
@@ -107,12 +139,20 @@ def generate_launch_description():
         output="screen",
         parameters=[
             {"backend_mode": "ros2_control"},
+            {"command_mode": command_mode},
+            {"autostart": autostart},
             {"use_sim_time": use_sim_time},
         ],
     )
 
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="true"),
+        DeclareLaunchArgument("autostart", default_value="true"),
+        DeclareLaunchArgument(
+            "command_mode",
+            default_value="position",
+            choices=["position", "velocity", "effort"],
+        ),
         DeclareLaunchArgument("gui", default_value="true"),
         DeclareLaunchArgument("gazebo_gui", default_value="true"),
         gazebo_gui,
@@ -145,7 +185,10 @@ def generate_launch_description():
             executable="pick_place_node",
             name="pick_place_node",
             output="screen",
-            parameters=[{"use_sim_time": use_sim_time}],
+            parameters=[
+                {"use_sim_time": use_sim_time},
+                {"autostart": autostart},
+            ],
         ),
         Node(
             package="planar_arm_control",
@@ -165,13 +208,23 @@ def generate_launch_description():
         RegisterEventHandler(
             OnProcessExit(
                 target_action=spawn_joint_state_broadcaster,
-                on_exit=[spawn_trajectory_controller],
+                on_exit=[
+                    spawn_position_controller,
+                    spawn_velocity_controller,
+                    spawn_effort_controller,
+                ],
             )
         ),
-        RegisterEventHandler(
-            OnProcessExit(
-                target_action=spawn_trajectory_controller,
-                on_exit=[spawn_gripper_controller, controller_node],
-            )
-        ),
+        RegisterEventHandler(OnProcessExit(
+            target_action=spawn_position_controller,
+            on_exit=[spawn_gripper_controller, controller_node],
+        )),
+        RegisterEventHandler(OnProcessExit(
+            target_action=spawn_velocity_controller,
+            on_exit=[spawn_gripper_controller, controller_node],
+        )),
+        RegisterEventHandler(OnProcessExit(
+            target_action=spawn_effort_controller,
+            on_exit=[spawn_gripper_controller, controller_node],
+        )),
     ])

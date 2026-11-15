@@ -130,7 +130,7 @@
     </model>
     <model name="pick_item">
       <static>false</static>
-      <pose>4.3280 0 2.1500 0 0 0</pose>
+      <pose>4.2096 0 2.1500 0 0 0</pose>
       <link name="item">
         <inertial>
           <mass>0.2</mass>

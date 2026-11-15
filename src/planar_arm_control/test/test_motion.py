@@ -51,6 +51,24 @@ class TestMotion(unittest.TestCase):
         self.assertLessEqual(float(np.max(np.abs(velocities))), 1.001)
         self.assertTrue(np.all(np.abs(samples[:, 0]) <= math.pi))
 
+    def test_quintic_trajectory_kinematics_match_stationary_endpoints(self):
+        """Position, velocity, and acceleration are consistent at endpoints."""
+        trajectory = make_trajectory([0.0, 0.5], [1.0, -0.5], 2.0, 1.0)
+
+        start, start_velocity, start_acceleration = (
+            trajectory.sample_kinematics(0.0)
+        )
+        end, end_velocity, end_acceleration = (
+            trajectory.sample_kinematics(trajectory.duration)
+        )
+
+        np.testing.assert_allclose(start, [0.0, 0.5])
+        np.testing.assert_allclose(end, [1.0, -0.5])
+        np.testing.assert_allclose(start_velocity, [0.0, 0.0])
+        np.testing.assert_allclose(end_velocity, [0.0, 0.0])
+        np.testing.assert_allclose(start_acceleration, [0.0, 0.0])
+        np.testing.assert_allclose(end_acceleration, [0.0, 0.0])
+
     def test_xy_target_uses_ik_and_returns_a_valid_solution(self):
         """Confirm IK matches the requested end-effector point."""
         known_positions = [0.6, 0.2, -0.2]

@@ -23,9 +23,11 @@ def generate_launch_description():
         Command(["xacro ", description_file]), value_type=str
     )
     use_sim_time = LaunchConfiguration("use_sim_time")
+    autostart = LaunchConfiguration("autostart")
 
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="false"),
+        DeclareLaunchArgument("autostart", default_value="true"),
         DeclareLaunchArgument("gui", default_value="true"),
         Node(
             package="planar_arm_control",
@@ -34,6 +36,7 @@ def generate_launch_description():
             output="screen",
             parameters=[
                 {"backend_mode": "simulated"},
+                {"autostart": autostart},
                 {"use_sim_time": use_sim_time},
             ],
         ),

@@ -22,6 +22,34 @@ class QuinticTrajectory:
         goal = np.asarray(self.goal, dtype=float)
         return start + blend * (goal - start)
 
+    def sample_kinematics(
+        self, elapsed: float
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return position, velocity, and acceleration along the path."""
+        progress = min(1.0, max(0.0, elapsed / self.duration))
+        blend = (
+            10.0 * progress**3
+            - 15.0 * progress**4
+            + 6.0 * progress**5
+        )
+        blend_velocity = (
+            30.0 * progress**2
+            - 60.0 * progress**3
+            + 30.0 * progress**4
+        ) / self.duration
+        blend_acceleration = (
+            60.0 * progress
+            - 180.0 * progress**2
+            + 120.0 * progress**3
+        ) / self.duration**2
+        start = np.asarray(self.start, dtype=float)
+        delta = np.asarray(self.goal, dtype=float) - start
+        return (
+            start + blend * delta,
+            blend_velocity * delta,
+            blend_acceleration * delta,
+        )
+
 
 def make_trajectory(
     start: list[float] | np.ndarray,

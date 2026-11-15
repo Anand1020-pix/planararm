@@ -6,7 +6,7 @@ import time
 
 import rclpy
 from geometry_msgs.msg import PointStamped
-from rclpy.node import Node
+from rclpy.lifecycle import LifecycleNode, TransitionCallbackReturn
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
@@ -56,12 +56,13 @@ def build_pick_place_waypoints(pick_xy=PICK_XY, place_xy=PLACE_XY):
     )
 
 
-class PickPlaceNode(Node):
+class PickPlaceNode(LifecycleNode):
     """Run safe waypoints and operate the physical parallel-jaw gripper."""
 
     def __init__(self):
         """Create task interfaces and initialize the sequence state."""
         super().__init__("pick_place_node")
+        self.declare_parameter("autostart", True)
         self.arm = PlanarArm(LINK_LENGTHS)
         self.declare_parameter("pick_x", PICK_XY[0])
         self.declare_parameter("pick_y", PICK_XY[1])
@@ -89,8 +90,11 @@ class PickPlaceNode(Node):
             "/gripper_controller/joint_trajectory",
             10,
         )
-        self._status_publisher = self.create_publisher(
+        self._status_publisher = self.create_lifecycle_publisher(
             String, "/pick_place/status", 10
+        )
+        self._controller_cancel_client = self.create_client(
+            Trigger, "/controller/cancel"
         )
         self.create_subscription(
             JointState, "/joint_states", self._on_joint_state, 10
@@ -101,14 +105,97 @@ class PickPlaceNode(Node):
         self.create_service(Trigger, "/pick_place/pick", self._on_pick)
         self.create_service(Trigger, "/pick_place/place", self._on_place)
         self.create_service(Trigger, "/pick_place/release", self._on_release)
+        self.create_service(Trigger, "/pick_place/cancel", self._on_cancel)
+        self._active = False
         self._timer = self.create_timer(0.05, self._on_timer)
+        self._timer.cancel()
         self._startup_gripper_pending = True
+
+    def on_configure(self, state):
+        """Configure the task node without starting its timer."""
+        return super().on_configure(state)
+
+    def on_activate(self, state):
+        """Enable status publishing and task progression."""
+        result = super().on_activate(state)
+        if result != TransitionCallbackReturn.SUCCESS:
+            return result
+        self._active = True
+        self._timer.reset()
         self._publish_status("Ready")
+        return TransitionCallbackReturn.SUCCESS
+
+    def on_deactivate(self, state):
+        """Stop task progression and cancel any active arm motion."""
+        self._timer.cancel()
+        if self._running:
+            self._cancel_operation("Pick/place operation cancelled")
+            self._request_controller_cancel()
+        self._active = False
+        return super().on_deactivate(state)
+
+    def on_shutdown(self, state):
+        """Stop the task timer and cancel an active sequence."""
+        if self._active:
+            result = self.on_deactivate(state)
+            if result != TransitionCallbackReturn.SUCCESS:
+                return result
+        else:
+            self._timer.cancel()
+        return super().on_shutdown(state)
 
     def _publish_status(self, text: str) -> None:
+        if not self._active:
+            return
         message = String()
         message.data = text
         self._status_publisher.publish(message)
+
+    def _request_controller_cancel(self) -> bool:
+        """Request cancellation from the controller if it is available."""
+        if not self._controller_cancel_client.service_is_ready():
+            return False
+        future = self._controller_cancel_client.call_async(
+            Trigger.Request()
+        )
+        future.add_done_callback(self._on_controller_cancel_response)
+        return True
+
+    def _on_controller_cancel_response(self, future) -> None:
+        try:
+            response = future.result()
+        except Exception as error:
+            self.get_logger().error(
+                f"Controller cancellation request failed: {error}"
+            )
+            return
+        if not response.success:
+            self.get_logger().warning(response.message)
+
+    def _cancel_operation(self, message: str) -> None:
+        self._running = False
+        self._sequence_ready = False
+        self._stage_started = False
+        self._stage_complete = False
+        self._publish_status(message)
+
+    def _on_cancel(self, request, response):
+        """Stop pick/place progression and cancel the arm controller."""
+        del request
+        if not self._active:
+            response.success = False
+            response.message = "Pick/place lifecycle node is not active"
+            return response
+        controller_ready = self._request_controller_cancel()
+        if self._running:
+            self._cancel_operation("Pick/place operation cancelled")
+        if not controller_ready:
+            response.success = False
+            response.message = "Controller cancel service is not available"
+            return response
+        response.success = True
+        response.message = "Pick/place and arm motion cancellation requested"
+        return response
 
     def _on_joint_state(self, message: JointState) -> None:
         by_name = dict(zip(message.name, message.position))
@@ -148,6 +235,14 @@ class PickPlaceNode(Node):
             return
         if message.data.startswith("Rejected:"):
             self._fail(f"Controller rejected a waypoint: {message.data}")
+        elif message.data == "Trajectory cancelled; holding current position":
+            self._cancel_operation(
+                "Pick/place operation cancelled by controller"
+            )
+        elif message.data.startswith("Replacing active trajectory"):
+            self._cancel_operation(
+                "Pick/place operation interrupted by a new motion target"
+            )
         elif message.data.startswith("Executing trajectory"):
             self._stage_started = True
         elif message.data == "Trajectory complete" and self._stage_started:
@@ -200,6 +295,10 @@ class PickPlaceNode(Node):
 
     def _on_release(self, request, response):
         del request
+        if not self._active:
+            response.success = False
+            response.message = "Pick/place lifecycle node is not active"
+            return response
         if self._running:
             response.success = False
             response.message = "Wait for the current arm motion to finish"
@@ -225,6 +324,10 @@ class PickPlaceNode(Node):
         operation: str,
         waypoints: list[tuple[str, tuple[float, float]]],
     ):
+        if not self._active:
+            response.success = False
+            response.message = "Pick/place lifecycle node is not active"
+            return response
         if self._running:
             response.success = False
             response.message = "A pick/place operation is already running"
@@ -241,7 +344,9 @@ class PickPlaceNode(Node):
             response.success = False
             response.message = "Gripper controller is not available"
             return response
-        if self._controller_status.startswith("Executing trajectory"):
+        if self._controller_status.startswith(
+            ("Executing trajectory", "Replacing active trajectory")
+        ):
             response.success = False
             response.message = "Controller is already executing a trajectory"
             return response
@@ -277,6 +382,8 @@ class PickPlaceNode(Node):
         self._target_publisher.publish(target)
 
     def _on_timer(self) -> None:
+        if not self._active:
+            return
         if (
             self._startup_gripper_pending
             and self._gripper_publisher.get_subscription_count() > 0
@@ -339,6 +446,15 @@ def main(args=None):
     rclpy.init(args=args)
     node = PickPlaceNode()
     try:
+        if bool(node.get_parameter("autostart").value):
+            if node.trigger_configure() != TransitionCallbackReturn.SUCCESS:
+                raise RuntimeError(
+                    "Could not configure pick/place lifecycle"
+                )
+            if node.trigger_activate() != TransitionCallbackReturn.SUCCESS:
+                raise RuntimeError(
+                    "Could not activate pick/place lifecycle"
+                )
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
