@@ -170,7 +170,7 @@ After `ros2 control list_controllers` shows both trajectory controllers and the 
 ros2 service call /pick_place/pick std_srvs/srv/Trigger "{}"
 ```
 
-The arm approaches and grips at `(4.0, 1.95)`, the center of the settled item on the pick table, then lifts it. Call the place service to carry it to `(-3.0, 3.0)` and release it:
+The arm approaches and grips at `(4.0, 2.0)`, the center of the settled item on the pick table, then lifts it. Call the place service to carry it to `(-3.0, 3.0)` and release it:
 
 ```bash
 ros2 service call /pick_place/place std_srvs/srv/Trigger "{}"
